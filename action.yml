@@ -1,0 +1,102 @@
+name: 'slopcheck'
+description: 'Detect AI-hallucinated packages in your dependency files'
+author: '0xToxSec'
+
+branding:
+  icon: 'shield'
+  color: 'red'
+
+inputs:
+  path:
+    description: 'Directory or file to scan (default: repo root)'
+    required: false
+    default: '.'
+  fail-on:
+    description: 'Fail the action on: "slop" (default) or "sus"'
+    required: false
+    default: 'slop'
+  python-version:
+    description: 'Python version to use'
+    required: false
+    default: '3.12'
+
+outputs:
+  result:
+    description: 'JSON scan results'
+    value: ${{ steps.scan.outputs.result }}
+  status:
+    description: 'Overall status: clean, sus, or slop'
+    value: ${{ steps.scan.outputs.status }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ inputs.python-version }}
+
+    - name: Install slopcheck
+      shell: bash
+      run: pip install slopcheck
+
+    - name: Run slopcheck
+      id: scan
+      shell: bash
+      run: |
+        set +e
+        OUTPUT=$(slopcheck "${{ inputs.path }}" --json 2>&1)
+        EXIT_CODE=$?
+        set -e
+
+        # Store JSON result
+        echo "result<<SLOPCHECK_EOF" >> $GITHUB_OUTPUT
+        echo "$OUTPUT" >> $GITHUB_OUTPUT
+        echo "SLOPCHECK_EOF" >> $GITHUB_OUTPUT
+
+        # Determine status
+        if [ $EXIT_CODE -eq 2 ]; then
+          echo "status=slop" >> $GITHUB_OUTPUT
+        elif [ $EXIT_CODE -eq 1 ]; then
+          echo "status=sus" >> $GITHUB_OUTPUT
+        else
+          echo "status=clean" >> $GITHUB_OUTPUT
+        fi
+
+        # Print human-readable output to logs
+        slopcheck "${{ inputs.path }}" 2>&1 || true
+
+        # Fail based on threshold
+        FAIL_ON="${{ inputs.fail-on }}"
+        if [ "$FAIL_ON" = "sus" ] && [ $EXIT_CODE -ge 1 ]; then
+          echo "::error::slopcheck found suspicious or hallucinated packages"
+          exit 1
+        elif [ "$FAIL_ON" = "slop" ] && [ $EXIT_CODE -ge 2 ]; then
+          echo "::error::slopcheck found hallucinated packages"
+          exit 1
+        fi
+
+    - name: Comment on PR
+      if: github.event_name == 'pull_request' && steps.scan.outputs.status != 'clean'
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const status = '${{ steps.scan.outputs.status }}';
+          const icon = status === 'slop' ? '🚨' : '⚠️';
+          const label = status === 'slop' ? 'SLOP DETECTED' : 'SUSPICIOUS PACKAGES';
+
+          let body = `## ${icon} slopcheck: ${label}\n\n`;
+          body += `slopcheck found issues in your dependency files.\n\n`;
+          body += `<details><summary>Full scan results</summary>\n\n`;
+          body += '```json\n';
+          body += `${{ steps.scan.outputs.result }}`;
+          body += '\n```\n</details>\n\n';
+          body += `Run \`slopcheck .\` locally to see the full report.\n\n`;
+          body += `---\n*[slopcheck](https://github.com/0xToxSec/slopcheck) - Detect AI-hallucinated packages*`;
+
+          github.rest.issues.createComment({
+            issue_number: context.issue.number,
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            body: body
+          });

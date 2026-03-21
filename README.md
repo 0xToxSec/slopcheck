@@ -93,6 +93,37 @@ target          Directory, file, or package name (default: .)
 --json          JSON output for CI pipelines
 ```
 
+## GitHub Action
+
+Add this to your repo at `.github/workflows/slopcheck.yml` and every PR that touches dependency files gets scanned automatically:
+
+```yaml
+name: slopcheck
+
+on:
+  pull_request:
+    paths:
+      - 'requirements*.txt'
+      - 'pyproject.toml'
+      - 'package.json'
+      - 'Cargo.toml'
+      - 'go.mod'
+
+jobs:
+  slopcheck:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: 0xToxSec/slopcheck@main
+        with:
+          path: '.'
+          fail-on: 'slop'
+```
+
+If slop is found, the action fails the check and drops a comment on the PR with the full report. Set `fail-on: 'sus'` to be stricter.
+
 ## License
 
 MIT

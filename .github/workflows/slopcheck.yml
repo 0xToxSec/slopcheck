@@ -1,0 +1,30 @@
+# Example workflow: add this to your repo at .github/workflows/slopcheck.yml
+# Runs slopcheck on every PR that touches dependency files.
+
+name: slopcheck
+
+on:
+  pull_request:
+    paths:
+      - 'requirements*.txt'
+      - 'pyproject.toml'
+      - 'setup.py'
+      - 'setup.cfg'
+      - 'Pipfile'
+      - 'package.json'
+      - 'Cargo.toml'
+      - 'go.mod'
+
+jobs:
+  slopcheck:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run slopcheck
+        uses: 0xToxSec/slopcheck@main
+        with:
+          path: '.'
+          fail-on: 'slop'
