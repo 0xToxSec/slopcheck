@@ -4,7 +4,7 @@ author: '0xToxSec'
 
 branding:
   icon: 'shield'
-  color: 'red'
+  color: 'green'
 
 inputs:
   path:
