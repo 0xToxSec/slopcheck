@@ -21,27 +21,90 @@ def parse_requirements_txt(path: Path) -> List[Tuple[str, str]]:
 
 
 def parse_pyproject_toml(path: Path) -> List[Tuple[str, str]]:
-    """Parse pyproject.toml dependencies. Minimal TOML parser -- just grabs dep lines."""
+    """Parse pyproject.toml dependencies. Handles PEP 621 and Poetry formats."""
     results = []
     text = path.read_text()
-    in_deps = False
+
+    in_array = False      # inside a [...] array block
+    in_optional = False   # inside [project.optional-dependencies]
+    in_poetry_deps = False  # inside [tool.poetry.*dependencies]
+    in_project = False    # inside [project] section (for catching `dependencies = [`)
+
     for line in text.splitlines():
         stripped = line.strip()
-        if stripped in ("[project.dependencies]", "dependencies = ["):
-            in_deps = True
-            continue
-        if in_deps:
-            if stripped.startswith("[") or (stripped and not stripped.startswith('"') and not stripped.startswith("'")):
-                if stripped == "]":
-                    in_deps = False
-                    continue
-                if stripped.startswith("["):
-                    in_deps = False
-                    continue
-            # Extract package name from "package>=1.0"
+
+        # Detect section headers (lines starting with [)
+        if stripped.startswith("[") and not stripped.startswith("[["):
+            in_array = False
+            in_optional = False
+            in_poetry_deps = False
+            in_project = False
+
+            if stripped == "[project]":
+                in_project = True
+                continue
+            elif stripped == "[project.dependencies]":
+                in_array = True
+                continue
+            elif stripped == "[project.optional-dependencies]":
+                in_optional = True
+                continue
+            elif stripped.startswith("[project.optional-dependencies."):
+                # Named extra group as its own table, deps are array items
+                in_array = True
+                continue
+            elif stripped in (
+                "[tool.poetry.dependencies]",
+                "[tool.poetry.dev-dependencies]",
+                "[tool.poetry.group.dev.dependencies]",
+            ) or re.match(r'\[tool\.poetry\.group\.\w+\.dependencies\]', stripped):
+                in_poetry_deps = True
+                continue
+            else:
+                continue
+
+        # Inside [project], catch `dependencies = [` as start of inline array
+        if in_project and stripped.startswith("dependencies") and "=" in stripped:
+            match_inline = re.match(r'dependencies\s*=\s*\[', stripped)
+            if match_inline:
+                # Grab any deps on the same line
+                for m in re.finditer(r'["\']([a-zA-Z0-9_.-]+)', stripped):
+                    results.append(("pypi", m.group(1)))
+                if "]" not in stripped:
+                    in_array = True
+                continue
+
+        # --- PEP 621 array blocks: lines like "flask>=2.0", ---
+        if in_array:
+            if stripped == "]":
+                in_array = False
+                continue
             match = re.match(r'["\']([a-zA-Z0-9_.-]+)', stripped)
             if match:
                 results.append(("pypi", match.group(1)))
+            continue
+
+        # --- PEP 621 optional-dependencies inline: dev = ["pytest", "black"] ---
+        if in_optional:
+            # Could be `key = [` (multiline) or `key = ["a", "b"]` (inline)
+            inline = re.match(r'\w+\s*=\s*\[', stripped)
+            if inline:
+                # Grab everything in the brackets on this line
+                for m in re.finditer(r'["\']([a-zA-Z0-9_.-]+)', stripped):
+                    results.append(("pypi", m.group(1)))
+                if "]" not in stripped:
+                    in_array = True  # continues on next lines
+            continue
+
+        # --- Poetry: key = "^1.0" or key = {version = "^1.0", ...} ---
+        if in_poetry_deps:
+            if "=" in stripped and not stripped.startswith("#"):
+                name = stripped.split("=")[0].strip()
+                # Skip the `python` key, it's not a real dep
+                if name and name != "python":
+                    results.append(("pypi", name))
+            continue
+
     return results
 
 
@@ -104,6 +167,44 @@ def parse_go_mod(path: Path) -> List[Tuple[str, str]]:
     return results
 
 
+def parse_pipfile(path: Path) -> List[Tuple[str, str]]:
+    """Parse Pipfile [packages] and [dev-packages] sections.
+
+    Pipfile is TOML-ish. Each dep is a line like:
+        flask = "*"
+        requests = {version = ">=2.28", extras = ["security"]}
+        django = "~=4.2"
+    """
+    results = []
+    in_packages = False
+    for line in path.read_text().splitlines():
+        stripped = line.strip()
+        if stripped.startswith("["):
+            in_packages = stripped.lower() in ("[packages]", "[dev-packages]")
+            continue
+        if in_packages and "=" in stripped and not stripped.startswith("#"):
+            name = stripped.split("=")[0].strip()
+            # Skip empty names and source/url directives
+            if name and not name.startswith("_"):
+                results.append(("pypi", name))
+    return results
+
+
+def parse_pipfile_lock(path: Path) -> List[Tuple[str, str]]:
+    """Parse Pipfile.lock (JSON). Grabs keys from 'default' and 'develop' sections."""
+    results = []
+    try:
+        data = json.loads(path.read_text())
+    except json.JSONDecodeError:
+        return results
+    for section in ("default", "develop"):
+        pkgs = data.get(section, {})
+        if isinstance(pkgs, dict):
+            for name in pkgs:
+                results.append(("pypi", name))
+    return results
+
+
 # Map filenames to parsers
 FILE_PARSERS = {
     "requirements.txt": parse_requirements_txt,
@@ -113,6 +214,8 @@ FILE_PARSERS = {
     "package.json": parse_package_json,
     "Cargo.toml": parse_cargo_toml,
     "go.mod": parse_go_mod,
+    "Pipfile": parse_pipfile,
+    "Pipfile.lock": parse_pipfile_lock,
 }
 
 

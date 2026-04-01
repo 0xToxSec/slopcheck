@@ -204,13 +204,25 @@ def analyze(info: PackageInfo) -> Verdict:
             ))
 
     # Signal 4: Hallucination pattern on existing package (could be registered bait)
+    # But if the package is old and popular, it's just a naming coincidence.
     pattern_msg = _check_hallucination_pattern(info.name)
     if pattern_msg:
-        flags.append(Flag(
-            signal="HALLUCINATION_PATTERN",
-            severity="warning",
-            message=f"{pattern_msg}. Package exists but the name screams 'LLM bait'."
-        ))
+        is_established = (
+            (age is not None and age > 365)
+            or (info.downloads is not None and info.downloads > 10_000)
+        )
+        if is_established:
+            flags.append(Flag(
+                signal="HALLUCINATION_PATTERN",
+                severity="info",
+                message=f"{pattern_msg}. Name looks like LLM bait but package is established."
+            ))
+        else:
+            flags.append(Flag(
+                signal="HALLUCINATION_PATTERN",
+                severity="warning",
+                message=f"{pattern_msg}. Package exists but the name screams 'LLM bait'."
+            ))
 
     # Signal 5: No repo link (legitimate packages almost always have one)
     if not info.repo_url:

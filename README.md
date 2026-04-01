@@ -36,6 +36,22 @@ slopcheck .
 slopcheck requirements.txt
 ```
 
+### Safe install (check first, install if clean)
+
+```bash
+# Instead of: pip install flask requests sketchy-package
+slopcheck install flask requests sketchy-package
+
+# Auto-detects ecosystem from your project (package.json = npm, etc.)
+# Or force it:
+slopcheck install express lodash --ecosystem npm
+
+# Install suspicious packages anyway (slop is ALWAYS blocked):
+slopcheck install some-package --force
+```
+
+Slop gets blocked. Always. Suspicious packages get skipped unless you pass `--force`. Clean packages install normally through your real package manager.
+
 ### Check a single package
 
 ```bash
@@ -81,7 +97,7 @@ slopcheck requirements.txt --json
 
 | Ecosystem | Dependency files | Registry |
 |-----------|-----------------|----------|
-| PyPI | `requirements.txt`, `pyproject.toml` | pypi.org |
+| PyPI | `requirements.txt`, `pyproject.toml`, `Pipfile`, `Pipfile.lock` | pypi.org |
 | npm | `package.json` | npmjs.org |
 | crates.io | `Cargo.toml` | crates.io |
 | Go | `go.mod` | proxy.golang.org |

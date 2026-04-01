@@ -1,6 +1,7 @@
 """CLI entry point. Zero config, blunt output."""
 
 import argparse
+import subprocess
 import sys
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -9,6 +10,11 @@ from typing import List, Tuple
 from slopcheck.registries import REGISTRY_CHECKERS, PackageInfo
 from slopcheck.detect import analyze, Verdict
 from slopcheck.parsers import auto_detect, FILE_PARSERS
+
+
+def _info(msg: str) -> None:
+    """Status messages go to stderr so JSON stdout stays clean."""
+    print(msg, file=sys.stderr)
 
 
 # ---------------------------------------------------------------------------
@@ -77,7 +83,6 @@ def _check_one(ecosystem: str, name: str) -> Verdict:
     """Check a single package against its registry and return a verdict."""
     checker = REGISTRY_CHECKERS.get(ecosystem)
     if not checker:
-        # Unknown ecosystem -- just flag it
         info = PackageInfo(name=name, ecosystem=ecosystem, exists=False, error="unknown registry")
         return analyze(info)
     info = checker(name)
@@ -88,8 +93,8 @@ def _scan_directory(directory: Path) -> List[Tuple[str, str]]:
     """Find and parse all dependency files in a directory."""
     deps = auto_detect(directory)
     if not deps:
-        print(f"{C.YELLOW}No dependency files found in {directory}{C.RESET}")
-        print(f"Looking for: {', '.join(FILE_PARSERS.keys())}")
+        _info(f"{C.YELLOW}No dependency files found in {directory}{C.RESET}")
+        _info(f"Looking for: {', '.join(FILE_PARSERS.keys())}")
         sys.exit(1)
     return deps
 
@@ -99,101 +104,33 @@ def _scan_file(filepath: Path) -> List[Tuple[str, str]]:
     name = filepath.name
     parser = FILE_PARSERS.get(name)
     if not parser:
-        # Try matching partial names (e.g., requirements-custom.txt)
         if "requirements" in name and name.endswith(".txt"):
             from slopcheck.parsers import parse_requirements_txt
             parser = parse_requirements_txt
         else:
-            print(f"{C.RED}Don't know how to parse: {name}{C.RESET}")
-            print(f"Supported: {', '.join(FILE_PARSERS.keys())}")
+            _info(f"{C.RED}Don't know how to parse: {name}{C.RESET}")
+            _info(f"Supported: {', '.join(FILE_PARSERS.keys())}")
             sys.exit(1)
     return parser(filepath)
 
 
-def main():
-    parser = argparse.ArgumentParser(
-        prog="slopcheck",
-        description="Detect AI-hallucinated packages before you install them.",
-    )
-    parser.add_argument(
-        "target",
-        nargs="?",
-        default=".",
-        help="Directory to scan, a dependency file, or a package name (with --pkg)",
-    )
-    parser.add_argument(
-        "--pkg",
-        metavar="ECOSYSTEM",
-        choices=["pypi", "npm", "crates.io", "go"],
-        help="Check a single package. Specify ecosystem: pypi, npm, crates.io, go",
-    )
-    parser.add_argument(
-        "--workers",
-        type=int,
-        default=10,
-        help="Parallel workers for registry checks (default: 10)",
-    )
-    parser.add_argument(
-        "--json",
-        action="store_true",
-        dest="json_output",
-        help="Output results as JSON",
-    )
-
-    args = parser.parse_args()
-
-    # Mode 1: Single package check
-    if args.pkg:
-        print(f"\n{C.BOLD}slopcheck{C.RESET} checking {args.target} on {args.pkg}...")
-        verdict = _check_one(args.pkg, args.target)
-        if args.json_output:
-            _print_json([verdict])
-        else:
-            print_verdict(verdict)
-            print()
-        sys.exit(2 if verdict.status == "SLOP" else 1 if verdict.status == "SUS" else 0)
-
-    # Mode 2: Scan file or directory
-    target = Path(args.target)
-    if target.is_file():
-        deps = _scan_file(target)
-        print(f"\n{C.BOLD}slopcheck{C.RESET} scanning {target.name}...")
-    else:
-        deps = _scan_directory(target)
-        print(f"\n{C.BOLD}slopcheck{C.RESET} scanning {target.resolve()}...")
-
-    # Deduplicate
-    deps = list(set(deps))
-    print(f"  found {len(deps)} dependencies\n")
-
-    # Check all packages in parallel
+def _check_packages(packages: List[Tuple[str, str]], workers: int = 10, json_output: bool = False) -> List[Verdict]:
+    """Check a list of (ecosystem, name) pairs in parallel. Returns verdicts."""
     verdicts: List[Verdict] = []
-    with ThreadPoolExecutor(max_workers=args.workers) as pool:
+    with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = {
             pool.submit(_check_one, eco, name): (eco, name)
-            for eco, name in deps
+            for eco, name in packages
         }
         for future in as_completed(futures):
             verdict = future.result()
             verdicts.append(verdict)
-            if not args.json_output:
+            if not json_output:
                 print_verdict(verdict)
 
-    # Sort: worst first
     order = {"SLOP": 0, "SUS": 1, "OK": 2}
     verdicts.sort(key=lambda v: order.get(v.status, 3))
-
-    if args.json_output:
-        _print_json(verdicts)
-    else:
-        print_summary(verdicts)
-
-    # Exit code: 2 if any slop, 1 if any sus, 0 if clean
-    if any(v.status == "SLOP" for v in verdicts):
-        sys.exit(2)
-    elif any(v.status == "SUS" for v in verdicts):
-        sys.exit(1)
-    sys.exit(0)
+    return verdicts
 
 
 def _print_json(verdicts: List[Verdict]) -> None:
@@ -209,6 +146,238 @@ def _print_json(verdicts: List[Verdict]) -> None:
             "suggestion": v.suggestion,
         })
     print(json.dumps(output, indent=2))
+
+
+# ---------------------------------------------------------------------------
+# Package manager detection + install passthrough
+# ---------------------------------------------------------------------------
+
+# Map ecosystem to install commands
+INSTALL_COMMANDS = {
+    "pypi": ["pip", "install"],
+    "npm": ["npm", "install"],
+    "crates.io": ["cargo", "add"],
+    "go": ["go", "get"],
+}
+
+# Try to guess ecosystem from package name format
+def _guess_ecosystem(name: str) -> str:
+    """Best-effort guess at which ecosystem a package belongs to."""
+    if "/" in name:
+        # github.com/foo/bar or similar = Go module
+        return "go"
+    # Default to pypi -- it's what vibe coders use most
+    return "pypi"
+
+
+def _detect_ecosystem_from_env() -> str:
+    """Look at what's in the current directory to guess ecosystem."""
+    cwd = Path(".")
+    if (cwd / "package.json").exists():
+        return "npm"
+    if (cwd / "Cargo.toml").exists():
+        return "crates.io"
+    if (cwd / "go.mod").exists():
+        return "go"
+    # Default
+    return "pypi"
+
+
+def cmd_install(args) -> None:
+    """Check packages, then install the clean ones."""
+    packages = args.packages
+    ecosystem = args.ecosystem or _detect_ecosystem_from_env()
+    force = args.force
+
+    if not packages:
+        _info(f"{C.RED}No packages specified.{C.RESET}")
+        _info(f"Usage: slopcheck install flask requests numpy")
+        sys.exit(1)
+
+    _info(f"\n{C.BOLD}slopcheck{C.RESET} checking {len(packages)} package(s) on {ecosystem} before install...\n")
+
+    # Check all packages
+    deps = [(ecosystem, pkg) for pkg in packages]
+    verdicts = _check_packages(deps, workers=args.workers)
+
+    # Separate clean from dirty
+    clean = [v.package for v in verdicts if v.status == "OK"]
+    sus = [v for v in verdicts if v.status == "SUS"]
+    slop = [v for v in verdicts if v.status == "SLOP"]
+
+    print_summary(verdicts)
+
+    # Block on slop, always
+    if slop:
+        _info(f"  {C.RED}{C.BOLD}BLOCKED:{C.RESET} {len(slop)} package(s) are hallucinated or dangerous.")
+        _info(f"  Refusing to install: {', '.join(v.package for v in slop)}")
+        _info("")
+        if not clean and not (sus and force):
+            sys.exit(2)
+
+    # Warn on sus, let through with --force
+    if sus and not force:
+        _info(f"  {C.YELLOW}{C.BOLD}WARNING:{C.RESET} {len(sus)} suspicious package(s) found.")
+        _info(f"  Skipping: {', '.join(v.package for v in sus)}")
+        _info(f"  Use {C.BOLD}--force{C.RESET} to install suspicious packages anyway.")
+        _info("")
+
+    # Build install list
+    to_install = list(clean)
+    if sus and force:
+        to_install.extend(v.package for v in sus)
+
+    if not to_install:
+        _info(f"  {C.RED}Nothing safe to install.{C.RESET}")
+        sys.exit(2)
+
+    # Run the actual package manager
+    install_cmd = INSTALL_COMMANDS.get(ecosystem)
+    if not install_cmd:
+        _info(f"{C.RED}Don't know how to install for: {ecosystem}{C.RESET}")
+        sys.exit(1)
+
+    full_cmd = install_cmd + to_install
+    _info(f"  {C.GREEN}{C.BOLD}Installing:{C.RESET} {' '.join(to_install)}")
+    _info(f"  {C.DIM}Running: {' '.join(full_cmd)}{C.RESET}\n")
+
+    # Flush stdout before handing off to subprocess so output ordering
+    # stays sane in piped/CI environments where Python full-buffers stdout.
+    sys.stdout.flush()
+    sys.stderr.flush()
+
+    result = subprocess.run(full_cmd)
+    sys.exit(result.returncode)
+
+
+def cmd_scan(args) -> None:
+    """Scan a directory or file for dependency issues."""
+    # Single package check
+    if args.pkg:
+        _info(f"\n{C.BOLD}slopcheck{C.RESET} checking {args.target} on {args.pkg}...")
+        verdict = _check_one(args.pkg, args.target)
+        if args.json_output:
+            _print_json([verdict])
+        else:
+            print_verdict(verdict)
+            print()
+        sys.exit(2 if verdict.status == "SLOP" else 1 if verdict.status == "SUS" else 0)
+
+    # Scan file or directory
+    target = Path(args.target)
+    if target.is_file():
+        deps = _scan_file(target)
+        _info(f"\n{C.BOLD}slopcheck{C.RESET} scanning {target.name}...")
+    else:
+        deps = _scan_directory(target)
+        _info(f"\n{C.BOLD}slopcheck{C.RESET} scanning {target.resolve()}...")
+
+    deps = list(set(deps))
+    _info(f"  found {len(deps)} dependencies\n")
+
+    verdicts = _check_packages(deps, workers=args.workers, json_output=args.json_output)
+
+    if args.json_output:
+        _print_json(verdicts)
+    else:
+        print_summary(verdicts)
+
+    if any(v.status == "SLOP" for v in verdicts):
+        sys.exit(2)
+    elif any(v.status == "SUS" for v in verdicts):
+        sys.exit(1)
+    sys.exit(0)
+
+
+# ---------------------------------------------------------------------------
+# Main entry point
+# ---------------------------------------------------------------------------
+
+def main():
+    parser = argparse.ArgumentParser(
+        prog="slopcheck",
+        description="Detect AI-hallucinated packages before you install them.",
+    )
+    subparsers = parser.add_subparsers(dest="command")
+
+    # --- slopcheck install <packages> ---
+    install_parser = subparsers.add_parser(
+        "install",
+        help="Check packages, then install the clean ones",
+        description="Check packages against their registry, block slop, then install what's clean.",
+    )
+    install_parser.add_argument(
+        "packages",
+        nargs="*",
+        help="Package names to check and install",
+    )
+    install_parser.add_argument(
+        "--ecosystem", "-e",
+        choices=["pypi", "npm", "crates.io", "go"],
+        default=None,
+        help="Force ecosystem (auto-detected from project files by default)",
+    )
+    install_parser.add_argument(
+        "--force", "-f",
+        action="store_true",
+        help="Install suspicious packages anyway (slop is always blocked)",
+    )
+    install_parser.add_argument(
+        "--workers",
+        type=int,
+        default=10,
+        help="Parallel workers (default: 10)",
+    )
+
+    # --- slopcheck scan (or just slopcheck .) ---
+    scan_parser = subparsers.add_parser(
+        "scan",
+        help="Scan dependency files for hallucinated packages",
+    )
+    scan_parser.add_argument(
+        "target",
+        nargs="?",
+        default=".",
+        help="Directory, file, or package name",
+    )
+    scan_parser.add_argument(
+        "--pkg",
+        metavar="ECOSYSTEM",
+        choices=["pypi", "npm", "crates.io", "go"],
+        help="Check a single package",
+    )
+    scan_parser.add_argument(
+        "--workers",
+        type=int,
+        default=10,
+        help="Parallel workers (default: 10)",
+    )
+    scan_parser.add_argument(
+        "--json",
+        action="store_true",
+        dest="json_output",
+        help="JSON output",
+    )
+
+    # Backwards compat: if first arg isn't a known subcommand, treat as scan
+    known_commands = {"install", "scan", "-h", "--help"}
+    if len(sys.argv) > 1 and sys.argv[1] not in known_commands:
+        # Inject "scan" so argparse routes correctly
+        # slopcheck . -> slopcheck scan .
+        # slopcheck requirements.txt -> slopcheck scan requirements.txt
+        # slopcheck flask --pkg pypi -> slopcheck scan flask --pkg pypi
+        sys.argv.insert(1, "scan")
+
+    args = parser.parse_args()
+
+    if args.command == "install":
+        cmd_install(args)
+    elif args.command == "scan":
+        cmd_scan(args)
+    else:
+        # No args at all = scan current dir
+        scan_args = scan_parser.parse_args(["."])
+        cmd_scan(scan_args)
 
 
 if __name__ == "__main__":

@@ -31,7 +31,7 @@ TIMEOUT = 8  # seconds -- don't hang on slow registries
 
 
 def check_pypi(name: str) -> PackageInfo:
-    """Hit PyPI JSON API."""
+    """Hit PyPI JSON API + pypistats for download counts."""
     url = f"https://pypi.org/pypi/{name}/json"
     try:
         r = requests.get(url, timeout=TIMEOUT)
@@ -60,14 +60,40 @@ def check_pypi(name: str) -> PackageInfo:
                     if created:
                         break
 
+        # Repo URL: project_urls dict (PEP 566) > home_page (deprecated)
+        # Keys vary in casing across packages, so normalize to lowercase.
+        repo_url = None
+        project_urls = info.get("project_urls") or {}
+        urls_lower = {k.lower(): v for k, v in project_urls.items()}
+        for key in ("source", "source code", "repository", "github", "homepage"):
+            if key in urls_lower:
+                repo_url = urls_lower[key]
+                break
+        if not repo_url:
+            repo_url = info.get("home_page") or None
+
+        # Download count from pypistats (best-effort, don't block on failure)
+        downloads = None
+        try:
+            dl_r = requests.get(
+                f"https://pypistats.org/api/packages/{name}/recent",
+                timeout=TIMEOUT,
+            )
+            if dl_r.status_code == 200:
+                dl_data = dl_r.json().get("data", {})
+                downloads = dl_data.get("last_month")
+        except requests.RequestException:
+            pass
+
         return PackageInfo(
             name=name,
             ecosystem="pypi",
             exists=True,
             created=created,
+            downloads=downloads,
             latest_version=info.get("version"),
             description=info.get("summary", ""),
-            repo_url=info.get("home_page") or info.get("project_url"),
+            repo_url=repo_url,
         )
     except requests.RequestException as e:
         return PackageInfo(name=name, ecosystem="pypi", exists=False, error=str(e))
@@ -126,7 +152,7 @@ def check_npm(name: str) -> PackageInfo:
 def check_crates(name: str) -> PackageInfo:
     """Hit crates.io API."""
     url = f"https://crates.io/api/v1/crates/{name}"
-    headers = {"User-Agent": "slopcheck/0.1 (supply-chain-safety)"}
+    headers = {"User-Agent": "slopcheck/0.3 (supply-chain-safety)"}
     try:
         r = requests.get(url, headers=headers, timeout=TIMEOUT)
         if r.status_code == 404:
