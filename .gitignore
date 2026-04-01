@@ -15,4 +15,9 @@ env/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.pyright/
+.coverage
+htmlcov/
 *.whl
+CODE_REVIEW.md
+.semgrep.yml

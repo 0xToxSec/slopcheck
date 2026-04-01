@@ -3,16 +3,16 @@
 import json
 import re
 from pathlib import Path
-from typing import Callable, Dict, List, Set
+from typing import Callable
 
 
-def _comment_lines(path: Path, bad_names: Set[str], comment_char: str = "#") -> int:
+def _comment_lines(path: Path, bad_names: set[str], comment_char: str = "#") -> int:
     """Comment out lines in a text file that contain a bad package name.
 
     Works for: requirements.txt, Pipfile, Cargo.toml, go.mod.
     Returns the number of lines commented out.
     """
-    lines = path.read_text().splitlines(keepends=True)
+    lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
     count = 0
     new_lines = []
     for line in lines:
@@ -25,40 +25,38 @@ def _comment_lines(path: Path, bad_names: Set[str], comment_char: str = "#") -> 
         token = re.split(r"[>=<!\[;@\s=\"\']", stripped)[0].strip()
         if token.lower() in bad_names:
             # Comment it out with a reason
-            new_lines.append(
-                f"{comment_char} [slopcheck] removed: {line.rstrip()}\n"
-            )
+            new_lines.append(f"{comment_char} [slopcheck] removed: {line.rstrip()}\n")
             count += 1
         else:
             new_lines.append(line)
     if count:
-        path.write_text("".join(new_lines))
+        path.write_text("".join(new_lines), encoding="utf-8")
     return count
 
 
-def _fix_requirements_txt(path: Path, bad_names: Set[str]) -> int:
+def _fix_requirements_txt(path: Path, bad_names: set[str]) -> int:
     """Comment out bad packages in requirements.txt."""
     return _comment_lines(path, bad_names, "#")
 
 
-def _fix_pipfile(path: Path, bad_names: Set[str]) -> int:
+def _fix_pipfile(path: Path, bad_names: set[str]) -> int:
     """Comment out bad packages in Pipfile."""
     return _comment_lines(path, bad_names, "#")
 
 
-def _fix_cargo_toml(path: Path, bad_names: Set[str]) -> int:
+def _fix_cargo_toml(path: Path, bad_names: set[str]) -> int:
     """Comment out bad packages in Cargo.toml."""
     return _comment_lines(path, bad_names, "#")
 
 
-def _fix_go_mod(path: Path, bad_names: Set[str]) -> int:
+def _fix_go_mod(path: Path, bad_names: set[str]) -> int:
     """Comment out bad packages in go.mod."""
     return _comment_lines(path, bad_names, "//")
 
 
-def _fix_pyproject_toml(path: Path, bad_names: Set[str]) -> int:
+def _fix_pyproject_toml(path: Path, bad_names: set[str]) -> int:
     """Remove bad packages from pyproject.toml (PEP 621 arrays + Poetry keys)."""
-    lines = path.read_text().splitlines(keepends=True)
+    lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
     count = 0
     new_lines = []
     for line in lines:
@@ -66,30 +64,26 @@ def _fix_pyproject_toml(path: Path, bad_names: Set[str]) -> int:
         # Check quoted strings in array lines: "flask>=2.0",
         match = re.match(r'["\']([a-zA-Z0-9_.-]+)', stripped)
         if match and match.group(1).lower() in bad_names:
-            new_lines.append(
-                f"    # [slopcheck] removed: {line.rstrip()}\n"
-            )
+            new_lines.append(f"    # [slopcheck] removed: {line.rstrip()}\n")
             count += 1
             continue
         # Check Poetry-style key = value lines
         if "=" in stripped and not stripped.startswith("#") and not stripped.startswith("["):
             key = stripped.split("=")[0].strip()
             if key.lower() in bad_names:
-                new_lines.append(
-                    f"# [slopcheck] removed: {line.rstrip()}\n"
-                )
+                new_lines.append(f"# [slopcheck] removed: {line.rstrip()}\n")
                 count += 1
                 continue
         new_lines.append(line)
     if count:
-        path.write_text("".join(new_lines))
+        path.write_text("".join(new_lines), encoding="utf-8")
     return count
 
 
-def _fix_package_json(path: Path, bad_names: Set[str]) -> int:
+def _fix_package_json(path: Path, bad_names: set[str]) -> int:
     """Remove bad packages from package.json."""
     try:
-        data = json.loads(path.read_text())
+        data = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
         return 0
     count = 0
@@ -101,14 +95,14 @@ def _fix_package_json(path: Path, bad_names: Set[str]) -> int:
                 del deps[k]
                 count += 1
     if count:
-        path.write_text(json.dumps(data, indent=2) + "\n")
+        path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     return count
 
 
-def _fix_pipfile_lock(path: Path, bad_names: Set[str]) -> int:
+def _fix_pipfile_lock(path: Path, bad_names: set[str]) -> int:
     """Remove bad packages from Pipfile.lock."""
     try:
-        data = json.loads(path.read_text())
+        data = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
         return 0
     count = 0
@@ -120,13 +114,13 @@ def _fix_pipfile_lock(path: Path, bad_names: Set[str]) -> int:
                 del pkgs[k]
                 count += 1
     if count:
-        path.write_text(json.dumps(data, indent=4, sort_keys=True) + "\n")
+        path.write_text(json.dumps(data, indent=4, sort_keys=True) + "\n", encoding="utf-8")
     return count
 
 
-def _fix_gemfile(path: Path, bad_names: Set[str]) -> int:
+def _fix_gemfile(path: Path, bad_names: set[str]) -> int:
     """Comment out bad gems in Gemfile."""
-    lines = path.read_text().splitlines(keepends=True)
+    lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
     count = 0
     new_lines = []
     for line in lines:
@@ -134,26 +128,26 @@ def _fix_gemfile(path: Path, bad_names: Set[str]) -> int:
         if stripped.startswith("#") or not stripped:
             new_lines.append(line)
             continue
-        match = re.match(r'''gem\s+['"]([a-zA-Z0-9_.-]+)['"]''', stripped)
+        match = re.match(r"""gem\s+['"]([a-zA-Z0-9_.-]+)['"]""", stripped)
         if match and match.group(1).lower() in bad_names:
             new_lines.append(f"# [slopcheck] removed: {line.rstrip()}\n")
             count += 1
         else:
             new_lines.append(line)
     if count:
-        path.write_text("".join(new_lines))
+        path.write_text("".join(new_lines), encoding="utf-8")
     return count
 
 
-def _fix_pom_xml(path: Path, bad_names: Set[str]) -> int:
+def _fix_pom_xml(path: Path, bad_names: set[str]) -> int:
     """Comment out bad dependencies in pom.xml."""
-    text = path.read_text()
+    text = path.read_text(encoding="utf-8")
     count = 0
     dep_pattern = re.compile(
-        r'(\s*<dependency>\s*'
-        r'<groupId>([^<]+)</groupId>\s*'
-        r'<artifactId>([^<]+)</artifactId>'
-        r'.*?</dependency>)',
+        r"(\s*<dependency>\s*"
+        r"<groupId>([^<]+)</groupId>\s*"
+        r"<artifactId>([^<]+)</artifactId>"
+        r".*?</dependency>)",
         re.DOTALL,
     )
 
@@ -169,14 +163,14 @@ def _fix_pom_xml(path: Path, bad_names: Set[str]) -> int:
 
     new_text = dep_pattern.sub(replacer, text)
     if count:
-        path.write_text(new_text)
+        path.write_text(new_text, encoding="utf-8")
     return count
 
 
-def _fix_composer_json(path: Path, bad_names: Set[str]) -> int:
+def _fix_composer_json(path: Path, bad_names: set[str]) -> int:
     """Remove bad packages from composer.json."""
     try:
-        data = json.loads(path.read_text())
+        data = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
         return 0
     count = 0
@@ -188,12 +182,12 @@ def _fix_composer_json(path: Path, bad_names: Set[str]) -> int:
                 del deps[k]
                 count += 1
     if count:
-        path.write_text(json.dumps(data, indent=4) + "\n")
+        path.write_text(json.dumps(data, indent=4) + "\n", encoding="utf-8")
     return count
 
 
 # Map filenames to fixers
-FILE_FIXERS: Dict[str, Callable] = {
+FILE_FIXERS: dict[str, Callable] = {
     "requirements.txt": _fix_requirements_txt,
     "requirements-dev.txt": _fix_requirements_txt,
     "requirements_dev.txt": _fix_requirements_txt,
@@ -209,7 +203,7 @@ FILE_FIXERS: Dict[str, Callable] = {
 }
 
 
-def fix_directory(directory: Path, bad_packages: List[str]) -> Dict[str, int]:
+def fix_directory(directory: Path, bad_packages: list[str]) -> dict[str, int]:
     """Remove bad packages from all dependency files in a directory.
 
     Returns a dict of {filename: count_removed}.
@@ -225,7 +219,7 @@ def fix_directory(directory: Path, bad_packages: List[str]) -> Dict[str, int]:
     return results
 
 
-def fix_file(filepath: Path, bad_packages: List[str]) -> int:
+def fix_file(filepath: Path, bad_packages: list[str]) -> int:
     """Remove bad packages from a specific dependency file.
 
     Returns the count of packages removed.

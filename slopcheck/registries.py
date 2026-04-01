@@ -1,9 +1,11 @@
 """Registry API clients for PyPI, npm, crates.io, Go, RubyGems, Maven, and Packagist."""
 
-import requests
+import contextlib
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Optional
-from dataclasses import dataclass
+
+import requests
 
 from slopcheck import __version__
 
@@ -11,11 +13,12 @@ from slopcheck import __version__
 @dataclass
 class PackageInfo:
     """What we know about a package from its registry."""
+
     name: str
     ecosystem: str
     exists: bool
     created: Optional[datetime] = None
-    downloads: Optional[int] = None       # monthly or recent
+    downloads: Optional[int] = None  # monthly or recent
     latest_version: Optional[str] = None
     description: Optional[str] = None
     repo_url: Optional[str] = None
@@ -115,18 +118,13 @@ def check_npm(name: str) -> PackageInfo:
         created = None
         time_data = data.get("time", {})
         if "created" in time_data:
-            try:
+            with contextlib.suppress(ValueError, TypeError):
                 created = datetime.fromisoformat(time_data["created"].replace("Z", "+00:00"))
-            except (ValueError, TypeError):
-                pass
 
         # Downloads -- separate API call
         downloads = None
         try:
-            dl_r = requests.get(
-                f"https://api.npmjs.org/downloads/point/last-month/{name}",
-                timeout=TIMEOUT
-            )
+            dl_r = requests.get(f"https://api.npmjs.org/downloads/point/last-month/{name}", timeout=TIMEOUT)
             if dl_r.status_code == 200:
                 downloads = dl_r.json().get("downloads")
         except requests.RequestException:
@@ -164,10 +162,8 @@ def check_crates(name: str) -> PackageInfo:
 
         created = None
         if data.get("created_at"):
-            try:
+            with contextlib.suppress(ValueError, TypeError):
                 created = datetime.fromisoformat(data["created_at"].replace("Z", "+00:00"))
-            except (ValueError, TypeError):
-                pass
 
         return PackageInfo(
             name=name,
@@ -195,10 +191,8 @@ def check_go(name: str) -> PackageInfo:
 
         created = None
         if data.get("Time"):
-            try:
+            with contextlib.suppress(ValueError, TypeError):
                 created = datetime.fromisoformat(data["Time"].replace("Z", "+00:00"))
-            except (ValueError, TypeError):
-                pass
 
         return PackageInfo(
             name=name,
@@ -223,10 +217,8 @@ def check_rubygems(name: str) -> PackageInfo:
 
         created = None
         if data.get("created_at"):
-            try:
+            with contextlib.suppress(ValueError, TypeError):
                 created = datetime.fromisoformat(data["created_at"].replace("Z", "+00:00"))
-            except (ValueError, TypeError):
-                pass
 
         return PackageInfo(
             name=name,
@@ -323,10 +315,8 @@ def check_packagist(name: str) -> PackageInfo:
         if versions:
             oldest = versions[-1]
             if oldest.get("time"):
-                try:
+                with contextlib.suppress(ValueError, TypeError):
                     created = datetime.fromisoformat(oldest["time"].replace("Z", "+00:00"))
-                except (ValueError, TypeError):
-                    pass
 
         return PackageInfo(
             name=name,

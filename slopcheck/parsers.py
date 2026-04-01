@@ -3,21 +3,22 @@
 import json
 import re
 from pathlib import Path
-from typing import List, Tuple
 
 
-def parse_requirements_txt(path: Path) -> List[Tuple[str, str]]:
+def parse_requirements_txt(path: Path) -> list[tuple[str, str]]:
     """Parse requirements.txt / requirements-dev.txt etc."""
     results = []
-    for line in path.read_text().splitlines():
+    for line in path.read_text(encoding="utf-8").splitlines():
         line = line.strip()
         if not line or line.startswith("#") or line.startswith("-"):
             continue
         # Skip VCS refs, URLs, local paths, and editable installs
-        if (line.startswith(("git+", "hg+", "svn+", "bzr+"))
-                or "://" in line
-                or line.startswith(("./", "../", "/"))
-                or line.startswith("file:")):
+        if (
+            line.startswith(("git+", "hg+", "svn+", "bzr+"))
+            or "://" in line
+            or line.startswith(("./", "../", "/"))
+            or line.startswith("file:")
+        ):
             continue
         # Strip version specifiers, extras, environment markers
         name = re.split(r"[>=<!\[;@\s]", line)[0].strip()
@@ -26,15 +27,15 @@ def parse_requirements_txt(path: Path) -> List[Tuple[str, str]]:
     return results
 
 
-def parse_pyproject_toml(path: Path) -> List[Tuple[str, str]]:
+def parse_pyproject_toml(path: Path) -> list[tuple[str, str]]:
     """Parse pyproject.toml dependencies. Handles PEP 621 and Poetry formats."""
     results = []
-    text = path.read_text()
+    text = path.read_text(encoding="utf-8")
 
-    in_array = False      # inside a [...] array block
-    in_optional = False   # inside [project.optional-dependencies]
+    in_array = False  # inside a [...] array block
+    in_optional = False  # inside [project.optional-dependencies]
     in_poetry_deps = False  # inside [tool.poetry.*dependencies]
-    in_project = False    # inside [project] section (for catching `dependencies = [`)
+    in_project = False  # inside [project] section (for catching `dependencies = [`)
 
     for line in text.splitlines():
         stripped = line.strip()
@@ -63,7 +64,7 @@ def parse_pyproject_toml(path: Path) -> List[Tuple[str, str]]:
                 "[tool.poetry.dependencies]",
                 "[tool.poetry.dev-dependencies]",
                 "[tool.poetry.group.dev.dependencies]",
-            ) or re.match(r'\[tool\.poetry\.group\.\w+\.dependencies\]', stripped):
+            ) or re.match(r"\[tool\.poetry\.group\.\w+\.dependencies\]", stripped):
                 in_poetry_deps = True
                 continue
             else:
@@ -71,7 +72,7 @@ def parse_pyproject_toml(path: Path) -> List[Tuple[str, str]]:
 
         # Inside [project], catch `dependencies = [` as start of inline array
         if in_project and stripped.startswith("dependencies") and "=" in stripped:
-            match_inline = re.match(r'dependencies\s*=\s*\[', stripped)
+            match_inline = re.match(r"dependencies\s*=\s*\[", stripped)
             if match_inline:
                 # Grab any deps on the same line
                 for m in re.finditer(r'["\']([a-zA-Z0-9_.-]+)', stripped):
@@ -93,7 +94,7 @@ def parse_pyproject_toml(path: Path) -> List[Tuple[str, str]]:
         # --- PEP 621 optional-dependencies inline: dev = ["pytest", "black"] ---
         if in_optional:
             # Could be `key = [` (multiline) or `key = ["a", "b"]` (inline)
-            inline = re.match(r'\w+\s*=\s*\[', stripped)
+            inline = re.match(r"\w+\s*=\s*\[", stripped)
             if inline:
                 # Grab everything in the brackets on this line
                 for m in re.finditer(r'["\']([a-zA-Z0-9_.-]+)', stripped):
@@ -114,11 +115,11 @@ def parse_pyproject_toml(path: Path) -> List[Tuple[str, str]]:
     return results
 
 
-def parse_package_json(path: Path) -> List[Tuple[str, str]]:
+def parse_package_json(path: Path) -> list[tuple[str, str]]:
     """Parse package.json dependencies + devDependencies."""
     results = []
     try:
-        data = json.loads(path.read_text())
+        data = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
         return results
     for key in ("dependencies", "devDependencies", "peerDependencies"):
@@ -129,20 +130,20 @@ def parse_package_json(path: Path) -> List[Tuple[str, str]]:
     return results
 
 
-def parse_cargo_toml(path: Path) -> List[Tuple[str, str]]:
+def parse_cargo_toml(path: Path) -> list[tuple[str, str]]:
     """Parse Cargo.toml [dependencies], [dev-dependencies], [build-dependencies],
     and dotted table syntax like [dependencies.reqwest]."""
     results = []
     in_deps = False
     dep_sections = {"[dependencies]", "[dev-dependencies]", "[build-dependencies]"}
-    for line in path.read_text().splitlines():
+    for line in path.read_text(encoding="utf-8").splitlines():
         stripped = line.strip()
         if stripped in dep_sections:
             in_deps = True
             continue
         # Dotted table: [dependencies.crate-name] or [dev-dependencies.crate-name]
         dotted = re.match(
-            r'\[(dependencies|dev-dependencies|build-dependencies)\.([a-zA-Z0-9_-]+)\]',
+            r"\[(dependencies|dev-dependencies|build-dependencies)\.([a-zA-Z0-9_-]+)\]",
             stripped,
         )
         if dotted:
@@ -159,11 +160,11 @@ def parse_cargo_toml(path: Path) -> List[Tuple[str, str]]:
     return results
 
 
-def parse_go_mod(path: Path) -> List[Tuple[str, str]]:
+def parse_go_mod(path: Path) -> list[tuple[str, str]]:
     """Parse go.mod require block."""
     results = []
     in_require = False
-    for line in path.read_text().splitlines():
+    for line in path.read_text(encoding="utf-8").splitlines():
         stripped = line.strip()
         if stripped.startswith("require ("):
             in_require = True
@@ -184,7 +185,7 @@ def parse_go_mod(path: Path) -> List[Tuple[str, str]]:
     return results
 
 
-def parse_pipfile(path: Path) -> List[Tuple[str, str]]:
+def parse_pipfile(path: Path) -> list[tuple[str, str]]:
     """Parse Pipfile [packages] and [dev-packages] sections.
 
     Pipfile is TOML-ish. Each dep is a line like:
@@ -194,7 +195,7 @@ def parse_pipfile(path: Path) -> List[Tuple[str, str]]:
     """
     results = []
     in_packages = False
-    for line in path.read_text().splitlines():
+    for line in path.read_text(encoding="utf-8").splitlines():
         stripped = line.strip()
         if stripped.startswith("["):
             in_packages = stripped.lower() in ("[packages]", "[dev-packages]")
@@ -207,11 +208,11 @@ def parse_pipfile(path: Path) -> List[Tuple[str, str]]:
     return results
 
 
-def parse_pipfile_lock(path: Path) -> List[Tuple[str, str]]:
+def parse_pipfile_lock(path: Path) -> list[tuple[str, str]]:
     """Parse Pipfile.lock (JSON). Grabs keys from 'default' and 'develop' sections."""
     results = []
     try:
-        data = json.loads(path.read_text())
+        data = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
         return results
     for section in ("default", "develop"):
@@ -222,33 +223,33 @@ def parse_pipfile_lock(path: Path) -> List[Tuple[str, str]]:
     return results
 
 
-def parse_gemfile(path: Path) -> List[Tuple[str, str]]:
+def parse_gemfile(path: Path) -> list[tuple[str, str]]:
     """Parse Ruby Gemfile. Lines like: gem 'rails', '~> 7.0'"""
     results = []
-    for line in path.read_text().splitlines():
+    for line in path.read_text(encoding="utf-8").splitlines():
         stripped = line.strip()
         if not stripped or stripped.startswith("#"):
             continue
         # Match: gem 'name' or gem "name"
-        match = re.match(r'''gem\s+['"]([a-zA-Z0-9_.-]+)['"]''', stripped)
+        match = re.match(r"""gem\s+['"]([a-zA-Z0-9_.-]+)['"]""", stripped)
         if match:
             results.append(("rubygems", match.group(1)))
     return results
 
 
-def parse_pom_xml(path: Path) -> List[Tuple[str, str]]:
+def parse_pom_xml(path: Path) -> list[tuple[str, str]]:
     """Parse Maven pom.xml for <dependency> blocks.
 
     Extracts groupId:artifactId pairs. Simple regex parser -- no XML lib needed
     for our purposes since we just need package names.
     """
     results = []
-    text = path.read_text()
+    text = path.read_text(encoding="utf-8")
     # Find all <dependency> blocks and extract groupId + artifactId
     dep_pattern = re.compile(
-        r'<dependency>\s*'
-        r'<groupId>([^<]+)</groupId>\s*'
-        r'<artifactId>([^<]+)</artifactId>',
+        r"<dependency>\s*"
+        r"<groupId>([^<]+)</groupId>\s*"
+        r"<artifactId>([^<]+)</artifactId>",
         re.DOTALL,
     )
     for m in dep_pattern.finditer(text):
@@ -258,7 +259,7 @@ def parse_pom_xml(path: Path) -> List[Tuple[str, str]]:
     return results
 
 
-def parse_build_gradle(path: Path) -> List[Tuple[str, str]]:
+def parse_build_gradle(path: Path) -> list[tuple[str, str]]:
     """Parse Gradle build.gradle for dependency declarations.
 
     Handles formats like:
@@ -268,37 +269,44 @@ def parse_build_gradle(path: Path) -> List[Tuple[str, str]]:
     """
     results = []
     dep_configs = (
-        "implementation", "api", "compileOnly", "runtimeOnly",
-        "testImplementation", "testCompileOnly", "testRuntimeOnly",
-        "annotationProcessor", "compile", "testCompile",
+        "implementation",
+        "api",
+        "compileOnly",
+        "runtimeOnly",
+        "testImplementation",
+        "testCompileOnly",
+        "testRuntimeOnly",
+        "annotationProcessor",
+        "compile",
+        "testCompile",
     )
-    for line in path.read_text().splitlines():
+    for line in path.read_text(encoding="utf-8").splitlines():
         stripped = line.strip()
         if not stripped or stripped.startswith("//"):
             continue
         for config in dep_configs:
             if stripped.startswith(config):
                 # Format: implementation 'group:artifact:version'
-                match = re.search(r'''['"]([^'"]+:[^'"]+:[^'"]+)['"]''', stripped)
+                match = re.search(r"""['"]([^'"]+:[^'"]+:[^'"]+)['"]""", stripped)
                 if match:
                     parts = match.group(1).split(":")
                     if len(parts) >= 2:
                         results.append(("maven", f"{parts[0]}:{parts[1]}"))
                     break
                 # Format: implementation group: 'x', name: 'y', version: 'z'
-                group_match = re.search(r'''group:\s*['"]([^'"]+)['"]''', stripped)
-                name_match = re.search(r'''name:\s*['"]([^'"]+)['"]''', stripped)
+                group_match = re.search(r"""group:\s*['"]([^'"]+)['"]""", stripped)
+                name_match = re.search(r"""name:\s*['"]([^'"]+)['"]""", stripped)
                 if group_match and name_match:
                     results.append(("maven", f"{group_match.group(1)}:{name_match.group(1)}"))
                 break
     return results
 
 
-def parse_composer_json(path: Path) -> List[Tuple[str, str]]:
+def parse_composer_json(path: Path) -> list[tuple[str, str]]:
     """Parse PHP composer.json require/require-dev."""
     results = []
     try:
-        data = json.loads(path.read_text())
+        data = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
         return results
     for key in ("require", "require-dev"):
@@ -330,7 +338,7 @@ FILE_PARSERS = {
 }
 
 
-def auto_detect(directory: Path) -> List[Tuple[str, str]]:
+def auto_detect(directory: Path) -> list[tuple[str, str]]:
     """Scan a directory for known dependency files and parse them all."""
     results = []
     for filename, parser in FILE_PARSERS.items():

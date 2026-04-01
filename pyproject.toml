@@ -4,17 +4,16 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "slopcheck"
-version = "0.5.0"
+version = "0.6.0"
 description = "Detect AI-hallucinated packages before you install them."
 readme = "README.md"
-license = {text = "MIT"}
+license = "MIT"
 requires-python = ">=3.9"
 keywords = ["security", "supply-chain", "slopsquatting", "ai", "hallucination", "package-manager"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Environment :: Console",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.9",
@@ -38,5 +37,31 @@ Homepage = "https://github.com/0xToxSec/slopcheck"
 Repository = "https://github.com/0xToxSec/slopcheck"
 Issues = "https://github.com/0xToxSec/slopcheck/issues"
 
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+    "ruff>=0.4.0",
+    "bandit>=1.7.0",
+    "pyright>=1.1",
+    "pip-audit>=2.6",
+    "pre-commit>=3.0",
+]
+
 [tool.setuptools.packages.find]
 include = ["slopcheck*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py39"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM"]
+ignore = ["SIM116"]
+
+[tool.bandit]
+exclude_dirs = ["tests"]
+skips = ["B404", "B603"]

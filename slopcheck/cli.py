@@ -1,18 +1,16 @@
 """CLI entry point. Zero config, blunt output."""
 
 import argparse
-import subprocess
+import subprocess  # nosec B404 -- required for install passthrough
 import sys
-from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import List, Tuple
+from pathlib import Path
 
-from slopcheck import __version__
-from slopcheck import allowlist
-from slopcheck.registries import REGISTRY_CHECKERS, PackageInfo
-from slopcheck.detect import analyze, Verdict
-from slopcheck.parsers import auto_detect, FILE_PARSERS
+from slopcheck import __version__, allowlist
+from slopcheck.detect import Verdict, analyze
 from slopcheck.fixer import fix_directory, fix_file
+from slopcheck.parsers import FILE_PARSERS, auto_detect
+from slopcheck.registries import REGISTRY_CHECKERS, PackageInfo
 
 
 def _info(msg: str) -> None:
@@ -23,6 +21,7 @@ def _info(msg: str) -> None:
 # ---------------------------------------------------------------------------
 # Colors (ANSI) -- vibe coders deserve pretty output
 # ---------------------------------------------------------------------------
+
 
 class C:
     RED = "\033[91m"
@@ -68,7 +67,7 @@ def print_verdict(v: Verdict) -> None:
     print("\n".join(lines))
 
 
-def print_summary(verdicts: List[Verdict]) -> None:
+def print_summary(verdicts: list[Verdict]) -> None:
     """Print final tally."""
     slop = sum(1 for v in verdicts if v.status == "SLOP")
     sus = sum(1 for v in verdicts if v.status == "SUS")
@@ -76,7 +75,7 @@ def print_summary(verdicts: List[Verdict]) -> None:
     ok = sum(1 for v in verdicts if v.status == "OK")
     total = len(verdicts)
 
-    print(f"\n{'='*50}")
+    print(f"\n{'=' * 50}")
     print(f"  scanned {total} packages")
     if slop:
         print(f"  {C.RED}{C.BOLD}{slop} SLOP{C.RESET} -- hallucinated or dangerously new")
@@ -99,7 +98,7 @@ def _check_one(ecosystem: str, name: str) -> Verdict:
     return analyze(info)
 
 
-def _scan_directory(directory: Path) -> List[Tuple[str, str]]:
+def _scan_directory(directory: Path) -> list[tuple[str, str]]:
     """Find and parse all dependency files in a directory."""
     deps = auto_detect(directory)
     if not deps:
@@ -109,13 +108,14 @@ def _scan_directory(directory: Path) -> List[Tuple[str, str]]:
     return deps
 
 
-def _scan_file(filepath: Path) -> List[Tuple[str, str]]:
+def _scan_file(filepath: Path) -> list[tuple[str, str]]:
     """Parse a specific dependency file."""
     name = filepath.name
     parser = FILE_PARSERS.get(name)
     if not parser:
         if "requirements" in name and name.endswith(".txt"):
             from slopcheck.parsers import parse_requirements_txt
+
             parser = parse_requirements_txt
         else:
             _info(f"{C.RED}Don't know how to parse: {name}{C.RESET}")
@@ -124,7 +124,7 @@ def _scan_file(filepath: Path) -> List[Tuple[str, str]]:
     return parser(filepath)
 
 
-def _check_packages(packages: List[Tuple[str, str]], workers: int = 10, json_output: bool = False) -> List[Verdict]:
+def _check_packages(packages: list[tuple[str, str]], workers: int = 10, json_output: bool = False) -> list[Verdict]:
     """Check a list of (ecosystem, name) pairs in parallel. Returns verdicts."""
     # Filter out allowlisted packages
     allowed = allowlist.load()
@@ -135,12 +135,9 @@ def _check_packages(packages: List[Tuple[str, str]], workers: int = 10, json_out
         if skipped and not json_output:
             _info(f"  {C.DIM}skipped {skipped} allowlisted package(s){C.RESET}")
 
-    verdicts: List[Verdict] = []
+    verdicts: list[Verdict] = []
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = {
-            pool.submit(_check_one, eco, name): (eco, name)
-            for eco, name in packages
-        }
+        futures = {pool.submit(_check_one, eco, name): (eco, name) for eco, name in packages}
         for future in as_completed(futures):
             verdict = future.result()
             verdicts.append(verdict)
@@ -152,18 +149,21 @@ def _check_packages(packages: List[Tuple[str, str]], workers: int = 10, json_out
     return verdicts
 
 
-def _print_json(verdicts: List[Verdict]) -> None:
+def _print_json(verdicts: list[Verdict]) -> None:
     """JSON output for CI integration."""
     import json
+
     output = []
     for v in verdicts:
-        output.append({
-            "package": v.package,
-            "ecosystem": v.ecosystem,
-            "status": v.status,
-            "flags": [{"signal": f.signal, "severity": f.severity, "message": f.message} for f in v.flags],
-            "suggestion": v.suggestion,
-        })
+        output.append(
+            {
+                "package": v.package,
+                "ecosystem": v.ecosystem,
+                "status": v.status,
+                "flags": [{"signal": f.signal, "severity": f.severity, "message": f.message} for f in v.flags],
+                "suggestion": v.suggestion,
+            }
+        )
     print(json.dumps(output, indent=2))
 
 
@@ -180,6 +180,7 @@ INSTALL_COMMANDS = {
     "rubygems": ["gem", "install"],
     "packagist": ["composer", "require"],
 }
+
 
 def _detect_ecosystem_from_env() -> str:
     """Look at what's in the current directory to guess ecosystem."""
@@ -208,7 +209,7 @@ def cmd_install(args) -> None:
 
     if not packages:
         _info(f"{C.RED}No packages specified.{C.RESET}")
-        _info(f"Usage: slopcheck install flask requests numpy")
+        _info("Usage: slopcheck install flask requests numpy")
         sys.exit(1)
 
     _info(f"\n{C.BOLD}slopcheck{C.RESET} checking {len(packages)} package(s) on {ecosystem} before install...\n")
@@ -263,7 +264,7 @@ def cmd_install(args) -> None:
     sys.stdout.flush()
     sys.stderr.flush()
 
-    result = subprocess.run(full_cmd)
+    result = subprocess.run(full_cmd)  # nosec B603 -- args are package names, not user shell input
     sys.exit(result.returncode)
 
 
@@ -370,36 +371,38 @@ def cmd_init() -> None:
     hook_path = hooks_dir / "pre-commit"
 
     if hook_path.exists():
-        existing = hook_path.read_text()
+        existing = hook_path.read_text(encoding="utf-8")
         if "slopcheck" in existing:
             _info(f"{C.GREEN}slopcheck hook already installed.{C.RESET}")
             sys.exit(0)
         # There's an existing hook that isn't ours. Append to it.
         _info(f"{C.YELLOW}Existing pre-commit hook found. Appending slopcheck check.{C.RESET}")
-        with open(hook_path, "a") as f:
+        with open(hook_path, "a", encoding="utf-8") as f:
             f.write("\n\n# --- slopcheck (appended) ---\n")
             # Write just the check part, not the shebang
             f.write("\n".join(HOOK_SCRIPT.splitlines()[1:]) + "\n")
     else:
-        hook_path.write_text(HOOK_SCRIPT)
+        hook_path.write_text(HOOK_SCRIPT, encoding="utf-8")
 
     # Make it executable (no-op on Windows, needed on Unix)
     try:
         import stat
+
         hook_path.chmod(hook_path.stat().st_mode | stat.S_IEXEC)
     except (OSError, AttributeError):
         pass
 
     _info(f"\n  {C.GREEN}{C.BOLD}Done.{C.RESET} slopcheck will run before every commit.")
-    _info(f"  If slop is found, the commit is blocked.")
+    _info("  If slop is found, the commit is blocked.")
     _info(f"  Run {C.BOLD}slopcheck . --fix{C.RESET} to auto-clean your dependency files.\n")
 
     # Run an initial scan so the user sees their current state immediately
     _info(f"  {C.BOLD}Running initial scan...{C.RESET}\n")
     from slopcheck.parsers import auto_detect
+
     deps = auto_detect(Path("."))
     if deps:
-        deps = list(set(deps))
+        deps = list(dict.fromkeys(deps))
         verdicts = _check_packages(deps)
         print_summary(verdicts)
     else:
@@ -410,12 +413,13 @@ def cmd_init() -> None:
 # Allow: manage the .slopcheck allowlist
 # ---------------------------------------------------------------------------
 
+
 def cmd_allow(args) -> None:
     """Add or remove packages from the allowlist."""
     if args.remove:
         if not args.package:
             _info(f"{C.RED}Specify a package name to remove.{C.RESET}")
-            _info(f"Usage: slopcheck allow my-pkg --remove")
+            _info("Usage: slopcheck allow my-pkg --remove")
             sys.exit(1)
         removed = allowlist.remove(args.package)
         if removed:
@@ -436,7 +440,7 @@ def cmd_allow(args) -> None:
 
     if not args.package:
         _info(f"{C.RED}Specify a package name.{C.RESET}")
-        _info(f"Usage: slopcheck allow flask-internal")
+        _info("Usage: slopcheck allow flask-internal")
         sys.exit(1)
 
     path = allowlist.add(args.package)
@@ -447,13 +451,15 @@ def cmd_allow(args) -> None:
 # Main entry point
 # ---------------------------------------------------------------------------
 
+
 def main():
     parser = argparse.ArgumentParser(
         prog="slopcheck",
         description="Detect AI-hallucinated packages before you install them.",
     )
     parser.add_argument(
-        "--version", "-V",
+        "--version",
+        "-V",
         action="version",
         version=f"slopcheck {__version__}",
     )
@@ -471,13 +477,15 @@ def main():
         help="Package names to check and install",
     )
     install_parser.add_argument(
-        "--ecosystem", "-e",
+        "--ecosystem",
+        "-e",
         choices=["pypi", "npm", "crates.io", "go", "rubygems", "maven", "packagist"],
         default=None,
         help="Force ecosystem (auto-detected from project files by default)",
     )
     install_parser.add_argument(
-        "--force", "-f",
+        "--force",
+        "-f",
         action="store_true",
         help="Install suspicious packages anyway (slop is always blocked)",
     )
@@ -543,12 +551,14 @@ def main():
         help="Package name to allowlist",
     )
     allow_parser.add_argument(
-        "--remove", "-r",
+        "--remove",
+        "-r",
         action="store_true",
         help="Remove a package from the allowlist",
     )
     allow_parser.add_argument(
-        "--list", "-l",
+        "--list",
+        "-l",
         action="store_true",
         dest="list_all",
         help="List all allowlisted packages",

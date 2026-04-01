@@ -81,9 +81,13 @@ runs:
     - name: Comment on PR
       if: github.event_name == 'pull_request' && steps.scan.outputs.status != 'clean'
       uses: actions/github-script@v7
+      env:
+        SCAN_STATUS: ${{ steps.scan.outputs.status }}
+        SCAN_RESULT: ${{ steps.scan.outputs.result }}
       with:
         script: |
-          const status = '${{ steps.scan.outputs.status }}';
+          const status = process.env.SCAN_STATUS;
+          const result = process.env.SCAN_RESULT;
           const icon = status === 'slop' ? '🚨' : '⚠️';
           const label = status === 'slop' ? 'SLOP DETECTED' : 'SUSPICIOUS PACKAGES';
 
@@ -91,7 +95,7 @@ runs:
           body += `slopcheck found issues in your dependency files.\n\n`;
           body += `<details><summary>Full scan results</summary>\n\n`;
           body += '```json\n';
-          body += `${{ steps.scan.outputs.result }}`;
+          body += result;
           body += '\n```\n</details>\n\n';
           body += `Run \`slopcheck .\` locally to see the full report.\n\n`;
           body += `---\n*[slopcheck](https://github.com/0xToxSec/slopcheck) - Detect AI-hallucinated packages*`;
