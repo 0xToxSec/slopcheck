@@ -13,6 +13,12 @@ def parse_requirements_txt(path: Path) -> List[Tuple[str, str]]:
         line = line.strip()
         if not line or line.startswith("#") or line.startswith("-"):
             continue
+        # Skip VCS refs, URLs, local paths, and editable installs
+        if (line.startswith(("git+", "hg+", "svn+", "bzr+"))
+                or "://" in line
+                or line.startswith(("./", "../", "/"))
+                or line.startswith("file:")):
+            continue
         # Strip version specifiers, extras, environment markers
         name = re.split(r"[>=<!\[;@\s]", line)[0].strip()
         if name:
@@ -124,13 +130,24 @@ def parse_package_json(path: Path) -> List[Tuple[str, str]]:
 
 
 def parse_cargo_toml(path: Path) -> List[Tuple[str, str]]:
-    """Parse Cargo.toml [dependencies]."""
+    """Parse Cargo.toml [dependencies], [dev-dependencies], [build-dependencies],
+    and dotted table syntax like [dependencies.reqwest]."""
     results = []
     in_deps = False
+    dep_sections = {"[dependencies]", "[dev-dependencies]", "[build-dependencies]"}
     for line in path.read_text().splitlines():
         stripped = line.strip()
-        if stripped == "[dependencies]" or stripped == "[dev-dependencies]":
+        if stripped in dep_sections:
             in_deps = True
+            continue
+        # Dotted table: [dependencies.crate-name] or [dev-dependencies.crate-name]
+        dotted = re.match(
+            r'\[(dependencies|dev-dependencies|build-dependencies)\.([a-zA-Z0-9_-]+)\]',
+            stripped,
+        )
+        if dotted:
+            in_deps = False  # stop parsing key=value as deps
+            results.append(("crates.io", dotted.group(2)))
             continue
         if stripped.startswith("[") and in_deps:
             in_deps = False
@@ -205,6 +222,96 @@ def parse_pipfile_lock(path: Path) -> List[Tuple[str, str]]:
     return results
 
 
+def parse_gemfile(path: Path) -> List[Tuple[str, str]]:
+    """Parse Ruby Gemfile. Lines like: gem 'rails', '~> 7.0'"""
+    results = []
+    for line in path.read_text().splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        # Match: gem 'name' or gem "name"
+        match = re.match(r'''gem\s+['"]([a-zA-Z0-9_.-]+)['"]''', stripped)
+        if match:
+            results.append(("rubygems", match.group(1)))
+    return results
+
+
+def parse_pom_xml(path: Path) -> List[Tuple[str, str]]:
+    """Parse Maven pom.xml for <dependency> blocks.
+
+    Extracts groupId:artifactId pairs. Simple regex parser -- no XML lib needed
+    for our purposes since we just need package names.
+    """
+    results = []
+    text = path.read_text()
+    # Find all <dependency> blocks and extract groupId + artifactId
+    dep_pattern = re.compile(
+        r'<dependency>\s*'
+        r'<groupId>([^<]+)</groupId>\s*'
+        r'<artifactId>([^<]+)</artifactId>',
+        re.DOTALL,
+    )
+    for m in dep_pattern.finditer(text):
+        group_id = m.group(1).strip()
+        artifact_id = m.group(2).strip()
+        results.append(("maven", f"{group_id}:{artifact_id}"))
+    return results
+
+
+def parse_build_gradle(path: Path) -> List[Tuple[str, str]]:
+    """Parse Gradle build.gradle for dependency declarations.
+
+    Handles formats like:
+        implementation 'group:artifact:version'
+        implementation "group:artifact:version"
+        implementation group: 'com.google', name: 'guava', version: '31.0'
+    """
+    results = []
+    dep_configs = (
+        "implementation", "api", "compileOnly", "runtimeOnly",
+        "testImplementation", "testCompileOnly", "testRuntimeOnly",
+        "annotationProcessor", "compile", "testCompile",
+    )
+    for line in path.read_text().splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("//"):
+            continue
+        for config in dep_configs:
+            if stripped.startswith(config):
+                # Format: implementation 'group:artifact:version'
+                match = re.search(r'''['"]([^'"]+:[^'"]+:[^'"]+)['"]''', stripped)
+                if match:
+                    parts = match.group(1).split(":")
+                    if len(parts) >= 2:
+                        results.append(("maven", f"{parts[0]}:{parts[1]}"))
+                    break
+                # Format: implementation group: 'x', name: 'y', version: 'z'
+                group_match = re.search(r'''group:\s*['"]([^'"]+)['"]''', stripped)
+                name_match = re.search(r'''name:\s*['"]([^'"]+)['"]''', stripped)
+                if group_match and name_match:
+                    results.append(("maven", f"{group_match.group(1)}:{name_match.group(1)}"))
+                break
+    return results
+
+
+def parse_composer_json(path: Path) -> List[Tuple[str, str]]:
+    """Parse PHP composer.json require/require-dev."""
+    results = []
+    try:
+        data = json.loads(path.read_text())
+    except json.JSONDecodeError:
+        return results
+    for key in ("require", "require-dev"):
+        deps = data.get(key, {})
+        if isinstance(deps, dict):
+            for name in deps:
+                # Skip php itself and ext-* extensions
+                if name == "php" or name.startswith("ext-"):
+                    continue
+                results.append(("packagist", name))
+    return results
+
+
 # Map filenames to parsers
 FILE_PARSERS = {
     "requirements.txt": parse_requirements_txt,
@@ -216,6 +323,10 @@ FILE_PARSERS = {
     "go.mod": parse_go_mod,
     "Pipfile": parse_pipfile,
     "Pipfile.lock": parse_pipfile_lock,
+    "Gemfile": parse_gemfile,
+    "pom.xml": parse_pom_xml,
+    "build.gradle": parse_build_gradle,
+    "composer.json": parse_composer_json,
 }
 
 

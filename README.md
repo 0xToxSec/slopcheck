@@ -79,6 +79,9 @@ slopcheck flask-gpt-helper --pkg pypi
 slopcheck react-ai-utils --pkg npm
 slopcheck easy-http --pkg crates.io
 slopcheck github.com/fake/module --pkg go
+slopcheck fake-gem --pkg rubygems
+slopcheck com.fake:library --pkg maven
+slopcheck fake/package --pkg packagist
 ```
 
 ### Output
@@ -113,6 +116,21 @@ slopcheck requirements.txt --json
 - **Typosquats** -- Levenshtein distance check against popular packages with "did you mean?" suggestions.
 - **Missing repo links** -- legitimate packages almost always link to source code.
 
+### Allowlist (skip packages during scans)
+
+```bash
+# Your team has internal packages that aren't on public registries?
+slopcheck allow my-internal-lib
+
+# Remove from allowlist
+slopcheck allow my-internal-lib --remove
+
+# See what's allowlisted
+slopcheck allow --list
+```
+
+Allowlisted packages are stored in `.slopcheck` (one per line). slopcheck walks up from the current directory to find it, so drop one in your repo root and your whole team shares it.
+
 ## Supported ecosystems
 
 | Ecosystem | Dependency files | Registry |
@@ -121,6 +139,9 @@ slopcheck requirements.txt --json
 | npm | `package.json` | npmjs.org |
 | crates.io | `Cargo.toml` | crates.io |
 | Go | `go.mod` | proxy.golang.org |
+| RubyGems | `Gemfile` | rubygems.org |
+| Maven | `pom.xml`, `build.gradle` | search.maven.org |
+| Packagist | `composer.json` | packagist.org |
 
 ## Exit codes
 
@@ -129,6 +150,7 @@ slopcheck requirements.txt --json
 | 0 | Clean -- all packages check out |
 | 1 | Suspicious -- some packages deserve a second look |
 | 2 | Slop detected -- hallucinated or dangerously new packages found |
+| 3 | Registry error -- couldn't reach one or more registries to verify |
 
 ## Options
 
@@ -136,7 +158,7 @@ slopcheck requirements.txt --json
 slopcheck [target] [options]
 
 target          Directory, file, or package name (default: .)
---pkg ECOSYSTEM Check single package (pypi, npm, crates.io, go)
+--pkg ECOSYSTEM Check single package (pypi, npm, crates.io, go, rubygems, maven, packagist)
 --workers N     Parallel registry checks (default: 10)
 --json          JSON output for CI pipelines
 --fix           Auto-remove SLOP packages from dependency files
@@ -158,6 +180,10 @@ on:
       - 'package.json'
       - 'Cargo.toml'
       - 'go.mod'
+      - 'Gemfile'
+      - 'pom.xml'
+      - 'build.gradle'
+      - 'composer.json'
 
 jobs:
   slopcheck:

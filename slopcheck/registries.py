@@ -1,9 +1,11 @@
-"""Registry API clients for PyPI, npm, crates.io, and Go modules."""
+"""Registry API clients for PyPI, npm, crates.io, Go, RubyGems, Maven, and Packagist."""
 
 import requests
 from datetime import datetime, timezone
 from typing import Optional
 from dataclasses import dataclass
+
+from slopcheck import __version__
 
 
 @dataclass
@@ -152,7 +154,7 @@ def check_npm(name: str) -> PackageInfo:
 def check_crates(name: str) -> PackageInfo:
     """Hit crates.io API."""
     url = f"https://crates.io/api/v1/crates/{name}"
-    headers = {"User-Agent": "slopcheck/0.4 (supply-chain-safety)"}
+    headers = {"User-Agent": f"slopcheck/{__version__} (supply-chain-safety)"}
     try:
         r = requests.get(url, headers=headers, timeout=TIMEOUT)
         if r.status_code == 404:
@@ -209,10 +211,144 @@ def check_go(name: str) -> PackageInfo:
         return PackageInfo(name=name, ecosystem="go", exists=False, error=str(e))
 
 
+def check_rubygems(name: str) -> PackageInfo:
+    """Hit RubyGems.org API."""
+    url = f"https://rubygems.org/api/v1/gems/{name}.json"
+    try:
+        r = requests.get(url, timeout=TIMEOUT)
+        if r.status_code == 404:
+            return PackageInfo(name=name, ecosystem="rubygems", exists=False)
+        r.raise_for_status()
+        data = r.json()
+
+        created = None
+        if data.get("created_at"):
+            try:
+                created = datetime.fromisoformat(data["created_at"].replace("Z", "+00:00"))
+            except (ValueError, TypeError):
+                pass
+
+        return PackageInfo(
+            name=name,
+            ecosystem="rubygems",
+            exists=True,
+            created=created,
+            downloads=data.get("downloads"),
+            latest_version=data.get("version"),
+            description=data.get("info", ""),
+            repo_url=data.get("source_code_uri") or data.get("homepage_uri"),
+        )
+    except requests.RequestException as e:
+        return PackageInfo(name=name, ecosystem="rubygems", exists=False, error=str(e))
+
+
+def check_maven(name: str) -> PackageInfo:
+    """Hit Maven Central search API. Expects 'group:artifact' format.
+
+    NOTE: Maven Central's `timestamp` field is the *latest version* upload time,
+    not the first-publish date. We intentionally skip the created field here to
+    avoid false positives from the age-based detection signals. The versionCount
+    field is used as a maturity proxy via downloads (more versions = more established).
+    """
+    # If user passes group:artifact, split it. Otherwise search by artifact name.
+    if ":" in name:
+        group, artifact = name.split(":", 1)
+        query = f"g:{group}+AND+a:{artifact}"
+    else:
+        artifact = name
+        query = f"a:{artifact}"
+
+    url = f"https://search.maven.org/solrsearch/select?q={query}&rows=1&wt=json"
+    try:
+        r = requests.get(url, timeout=TIMEOUT)
+        r.raise_for_status()
+        data = r.json()
+        docs = data.get("response", {}).get("docs", [])
+
+        if not docs:
+            return PackageInfo(name=name, ecosystem="maven", exists=False)
+
+        doc = docs[0]
+
+        # Use versionCount as a rough maturity proxy (no real download stats
+        # available from Maven Central search). A package with 50+ versions
+        # is clearly established; one with 1-2 versions is new.
+        version_count = doc.get("versionCount", 0)
+
+        return PackageInfo(
+            name=name,
+            ecosystem="maven",
+            exists=True,
+            created=None,  # intentionally skipped -- see docstring
+            downloads=version_count,  # proxy: version count as "downloads"
+            latest_version=doc.get("latestVersion"),
+            description="",
+            repo_url=None,
+        )
+    except requests.RequestException as e:
+        return PackageInfo(name=name, ecosystem="maven", exists=False, error=str(e))
+
+
+def check_packagist(name: str) -> PackageInfo:
+    """Hit Packagist (PHP/Composer) API. Expects 'vendor/package' format."""
+    url = f"https://repo.packagist.org/p2/{name}.json"
+    try:
+        r = requests.get(url, timeout=TIMEOUT)
+        if r.status_code == 404:
+            return PackageInfo(name=name, ecosystem="packagist", exists=False)
+        r.raise_for_status()
+        data = r.json()
+
+        # p2 format: {"packages": {"vendor/name": [{"version": "...", ...}]}}
+        versions = data.get("packages", {}).get(name, [])
+        if not versions:
+            return PackageInfo(name=name, ecosystem="packagist", exists=False)
+
+        latest = versions[0] if versions else {}
+
+        # Downloads from stats endpoint (best-effort)
+        downloads = None
+        try:
+            stats_r = requests.get(
+                f"https://packagist.org/packages/{name}/stats.json",
+                timeout=TIMEOUT,
+            )
+            if stats_r.status_code == 200:
+                downloads = stats_r.json().get("downloads", {}).get("monthly")
+        except requests.RequestException:
+            pass
+
+        # Created date from the oldest version's time
+        created = None
+        if versions:
+            oldest = versions[-1]
+            if oldest.get("time"):
+                try:
+                    created = datetime.fromisoformat(oldest["time"].replace("Z", "+00:00"))
+                except (ValueError, TypeError):
+                    pass
+
+        return PackageInfo(
+            name=name,
+            ecosystem="packagist",
+            exists=True,
+            created=created,
+            downloads=downloads,
+            latest_version=latest.get("version"),
+            description=latest.get("description", ""),
+            repo_url=latest.get("source", {}).get("url") if isinstance(latest.get("source"), dict) else None,
+        )
+    except requests.RequestException as e:
+        return PackageInfo(name=name, ecosystem="packagist", exists=False, error=str(e))
+
+
 # Map ecosystem names to check functions
 REGISTRY_CHECKERS = {
     "pypi": check_pypi,
     "npm": check_npm,
     "crates.io": check_crates,
     "go": check_go,
+    "rubygems": check_rubygems,
+    "maven": check_maven,
+    "packagist": check_packagist,
 }

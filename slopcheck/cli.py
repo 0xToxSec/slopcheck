@@ -7,6 +7,8 @@ from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Tuple
 
+from slopcheck import __version__
+from slopcheck import allowlist
 from slopcheck.registries import REGISTRY_CHECKERS, PackageInfo
 from slopcheck.detect import analyze, Verdict
 from slopcheck.parsers import auto_detect, FILE_PARSERS
@@ -37,6 +39,8 @@ def _status_badge(status: str) -> str:
         return f"{C.RED}{C.BOLD}[SLOP]{C.RESET}"
     elif status == "SUS":
         return f"{C.YELLOW}{C.BOLD}[SUS]{C.RESET}"
+    elif status == "ERROR":
+        return f"{C.YELLOW}[ERR]{C.RESET}"
     else:
         return f"{C.GREEN}[OK]{C.RESET}"
 
@@ -44,28 +48,31 @@ def _status_badge(status: str) -> str:
 def _severity_color(severity: str) -> str:
     if severity == "critical":
         return C.RED
-    elif severity == "warning":
+    elif severity in ("warning", "error"):
         return C.YELLOW
     return C.DIM
 
 
 def print_verdict(v: Verdict) -> None:
-    """Print one package's verdict. Blunt."""
+    """Print one package's verdict. Blunt. Single print call for thread safety."""
     badge = _status_badge(v.status)
-    print(f"\n  {badge} {C.BOLD}{v.package}{C.RESET} {C.DIM}({v.ecosystem}){C.RESET}")
+    lines = [f"\n  {badge} {C.BOLD}{v.package}{C.RESET} {C.DIM}({v.ecosystem}){C.RESET}"]
 
     for flag in v.flags:
         color = _severity_color(flag.severity)
-        print(f"    {color}> {flag.message}{C.RESET}")
+        lines.append(f"    {color}> {flag.message}{C.RESET}")
 
     if v.suggestion:
-        print(f"    {C.CYAN}? Did you mean: {C.BOLD}{v.suggestion}{C.RESET}")
+        lines.append(f"    {C.CYAN}? Did you mean: {C.BOLD}{v.suggestion}{C.RESET}")
+
+    print("\n".join(lines))
 
 
 def print_summary(verdicts: List[Verdict]) -> None:
     """Print final tally."""
     slop = sum(1 for v in verdicts if v.status == "SLOP")
     sus = sum(1 for v in verdicts if v.status == "SUS")
+    errors = sum(1 for v in verdicts if v.status == "ERROR")
     ok = sum(1 for v in verdicts if v.status == "OK")
     total = len(verdicts)
 
@@ -75,6 +82,8 @@ def print_summary(verdicts: List[Verdict]) -> None:
         print(f"  {C.RED}{C.BOLD}{slop} SLOP{C.RESET} -- hallucinated or dangerously new")
     if sus:
         print(f"  {C.YELLOW}{C.BOLD}{sus} SUS{C.RESET} -- worth a second look")
+    if errors:
+        print(f"  {C.YELLOW}{errors} ERROR{C.RESET} -- registry unreachable, could not verify")
     if ok:
         print(f"  {C.GREEN}{ok} OK{C.RESET}")
     print()
@@ -117,6 +126,15 @@ def _scan_file(filepath: Path) -> List[Tuple[str, str]]:
 
 def _check_packages(packages: List[Tuple[str, str]], workers: int = 10, json_output: bool = False) -> List[Verdict]:
     """Check a list of (ecosystem, name) pairs in parallel. Returns verdicts."""
+    # Filter out allowlisted packages
+    allowed = allowlist.load()
+    if allowed:
+        before = len(packages)
+        packages = [(eco, name) for eco, name in packages if name.lower() not in allowed]
+        skipped = before - len(packages)
+        if skipped and not json_output:
+            _info(f"  {C.DIM}skipped {skipped} allowlisted package(s){C.RESET}")
+
     verdicts: List[Verdict] = []
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = {
@@ -129,8 +147,8 @@ def _check_packages(packages: List[Tuple[str, str]], workers: int = 10, json_out
             if not json_output:
                 print_verdict(verdict)
 
-    order = {"SLOP": 0, "SUS": 1, "OK": 2}
-    verdicts.sort(key=lambda v: order.get(v.status, 3))
+    order = {"SLOP": 0, "SUS": 1, "ERROR": 2, "OK": 3}
+    verdicts.sort(key=lambda v: order.get(v.status, 4))
     return verdicts
 
 
@@ -159,17 +177,9 @@ INSTALL_COMMANDS = {
     "npm": ["npm", "install"],
     "crates.io": ["cargo", "add"],
     "go": ["go", "get"],
+    "rubygems": ["gem", "install"],
+    "packagist": ["composer", "require"],
 }
-
-# Try to guess ecosystem from package name format
-def _guess_ecosystem(name: str) -> str:
-    """Best-effort guess at which ecosystem a package belongs to."""
-    if "/" in name:
-        # github.com/foo/bar or similar = Go module
-        return "go"
-    # Default to pypi -- it's what vibe coders use most
-    return "pypi"
-
 
 def _detect_ecosystem_from_env() -> str:
     """Look at what's in the current directory to guess ecosystem."""
@@ -180,6 +190,12 @@ def _detect_ecosystem_from_env() -> str:
         return "crates.io"
     if (cwd / "go.mod").exists():
         return "go"
+    if (cwd / "Gemfile").exists():
+        return "rubygems"
+    if (cwd / "pom.xml").exists() or (cwd / "build.gradle").exists():
+        return "maven"
+    if (cwd / "composer.json").exists():
+        return "packagist"
     # Default
     return "pypi"
 
@@ -262,6 +278,9 @@ def cmd_scan(args) -> None:
         else:
             print_verdict(verdict)
             print()
+        if verdict.status == "ERROR":
+            _info(f"  {C.YELLOW}Could not reach registry. Verify your network connection.{C.RESET}")
+            sys.exit(3)
         sys.exit(2 if verdict.status == "SLOP" else 1 if verdict.status == "SUS" else 0)
 
     # Scan file or directory
@@ -273,7 +292,7 @@ def cmd_scan(args) -> None:
         deps = _scan_directory(target)
         _info(f"\n{C.BOLD}slopcheck{C.RESET} scanning {target.resolve()}...")
 
-    deps = list(set(deps))
+    deps = list(dict.fromkeys(deps))
     _info(f"  found {len(deps)} dependencies\n")
 
     verdicts = _check_packages(deps, workers=args.workers, json_output=args.json_output)
@@ -302,10 +321,17 @@ def cmd_scan(args) -> None:
                     _info(f"  {C.DIM}No files to fix (packages may be in lock files or JSON).{C.RESET}")
             _info("")
 
+    has_errors = any(v.status == "ERROR" for v in verdicts)
+    if has_errors:
+        _info(f"  {C.YELLOW}Some packages could not be verified (registry unreachable).{C.RESET}")
+        _info(f"  {C.DIM}Check your network connection and retry.{C.RESET}\n")
+
     if any(v.status == "SLOP" for v in verdicts):
         sys.exit(2)
     elif any(v.status == "SUS" for v in verdicts):
         sys.exit(1)
+    elif has_errors:
+        sys.exit(3)
     sys.exit(0)
 
 
@@ -381,6 +407,43 @@ def cmd_init() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Allow: manage the .slopcheck allowlist
+# ---------------------------------------------------------------------------
+
+def cmd_allow(args) -> None:
+    """Add or remove packages from the allowlist."""
+    if args.remove:
+        if not args.package:
+            _info(f"{C.RED}Specify a package name to remove.{C.RESET}")
+            _info(f"Usage: slopcheck allow my-pkg --remove")
+            sys.exit(1)
+        removed = allowlist.remove(args.package)
+        if removed:
+            _info(f"  {C.GREEN}Removed '{args.package}' from allowlist.{C.RESET}")
+        else:
+            _info(f"  {C.YELLOW}'{args.package}' not found in allowlist.{C.RESET}")
+        return
+
+    if args.list_all:
+        allowed = allowlist.load()
+        if not allowed:
+            _info(f"  {C.DIM}Allowlist is empty.{C.RESET}")
+            return
+        _info(f"  {C.BOLD}Allowlisted packages:{C.RESET}")
+        for name in sorted(allowed):
+            _info(f"    {name}")
+        return
+
+    if not args.package:
+        _info(f"{C.RED}Specify a package name.{C.RESET}")
+        _info(f"Usage: slopcheck allow flask-internal")
+        sys.exit(1)
+
+    path = allowlist.add(args.package)
+    _info(f"  {C.GREEN}Added '{args.package}' to {path}{C.RESET}")
+
+
+# ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
 
@@ -388,6 +451,11 @@ def main():
     parser = argparse.ArgumentParser(
         prog="slopcheck",
         description="Detect AI-hallucinated packages before you install them.",
+    )
+    parser.add_argument(
+        "--version", "-V",
+        action="version",
+        version=f"slopcheck {__version__}",
     )
     subparsers = parser.add_subparsers(dest="command")
 
@@ -404,7 +472,7 @@ def main():
     )
     install_parser.add_argument(
         "--ecosystem", "-e",
-        choices=["pypi", "npm", "crates.io", "go"],
+        choices=["pypi", "npm", "crates.io", "go", "rubygems", "maven", "packagist"],
         default=None,
         help="Force ecosystem (auto-detected from project files by default)",
     )
@@ -434,7 +502,7 @@ def main():
     scan_parser.add_argument(
         "--pkg",
         metavar="ECOSYSTEM",
-        choices=["pypi", "npm", "crates.io", "go"],
+        choices=["pypi", "npm", "crates.io", "go", "rubygems", "maven", "packagist"],
         help="Check a single package",
     )
     scan_parser.add_argument(
@@ -462,13 +530,38 @@ def main():
         description="Drop a git pre-commit hook into .git/hooks/ so slopcheck runs automatically.",
     )
 
+    # --- slopcheck allow <package> ---
+    allow_parser = subparsers.add_parser(
+        "allow",
+        help="Add a package to the .slopcheck allowlist (skip it during scans)",
+        description="Manage the .slopcheck allowlist. Allowlisted packages are skipped during scans.",
+    )
+    allow_parser.add_argument(
+        "package",
+        nargs="?",
+        default=None,
+        help="Package name to allowlist",
+    )
+    allow_parser.add_argument(
+        "--remove", "-r",
+        action="store_true",
+        help="Remove a package from the allowlist",
+    )
+    allow_parser.add_argument(
+        "--list", "-l",
+        action="store_true",
+        dest="list_all",
+        help="List all allowlisted packages",
+    )
+
     # Backwards compat: if first arg isn't a known subcommand, treat as scan
-    known_commands = {"install", "scan", "init", "-h", "--help"}
+    known_commands = {"install", "scan", "init", "allow", "-h", "--help", "--version"}
     if len(sys.argv) > 1 and sys.argv[1] not in known_commands:
         # Inject "scan" so argparse routes correctly
         # slopcheck . -> slopcheck scan .
         # slopcheck requirements.txt -> slopcheck scan requirements.txt
         # slopcheck flask --pkg pypi -> slopcheck scan flask --pkg pypi
+        # slopcheck --json . -> slopcheck scan --json .
         sys.argv.insert(1, "scan")
 
     args = parser.parse_args()
@@ -479,6 +572,8 @@ def main():
         cmd_scan(args)
     elif args.command == "init":
         cmd_init()
+    elif args.command == "allow":
+        cmd_allow(args)
     else:
         # No args at all = scan current dir
         scan_args = scan_parser.parse_args(["."])

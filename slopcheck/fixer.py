@@ -3,7 +3,7 @@
 import json
 import re
 from pathlib import Path
-from typing import Dict, List, Set
+from typing import Callable, Dict, List, Set
 
 
 def _comment_lines(path: Path, bad_names: Set[str], comment_char: str = "#") -> int:
@@ -124,8 +124,76 @@ def _fix_pipfile_lock(path: Path, bad_names: Set[str]) -> int:
     return count
 
 
+def _fix_gemfile(path: Path, bad_names: Set[str]) -> int:
+    """Comment out bad gems in Gemfile."""
+    lines = path.read_text().splitlines(keepends=True)
+    count = 0
+    new_lines = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("#") or not stripped:
+            new_lines.append(line)
+            continue
+        match = re.match(r'''gem\s+['"]([a-zA-Z0-9_.-]+)['"]''', stripped)
+        if match and match.group(1).lower() in bad_names:
+            new_lines.append(f"# [slopcheck] removed: {line.rstrip()}\n")
+            count += 1
+        else:
+            new_lines.append(line)
+    if count:
+        path.write_text("".join(new_lines))
+    return count
+
+
+def _fix_pom_xml(path: Path, bad_names: Set[str]) -> int:
+    """Comment out bad dependencies in pom.xml."""
+    text = path.read_text()
+    count = 0
+    dep_pattern = re.compile(
+        r'(\s*<dependency>\s*'
+        r'<groupId>([^<]+)</groupId>\s*'
+        r'<artifactId>([^<]+)</artifactId>'
+        r'.*?</dependency>)',
+        re.DOTALL,
+    )
+
+    def replacer(m):
+        nonlocal count
+        group_id = m.group(2).strip()
+        artifact_id = m.group(3).strip()
+        full_name = f"{group_id}:{artifact_id}".lower()
+        if full_name in bad_names:
+            count += 1
+            return f"<!-- [slopcheck] removed:\n{m.group(0)}\n-->"
+        return m.group(0)
+
+    new_text = dep_pattern.sub(replacer, text)
+    if count:
+        path.write_text(new_text)
+    return count
+
+
+def _fix_composer_json(path: Path, bad_names: Set[str]) -> int:
+    """Remove bad packages from composer.json."""
+    try:
+        data = json.loads(path.read_text())
+    except json.JSONDecodeError:
+        return 0
+    count = 0
+    for section in ("require", "require-dev"):
+        deps = data.get(section, {})
+        if isinstance(deps, dict):
+            to_remove = [k for k in deps if k.lower() in bad_names]
+            for k in to_remove:
+                del deps[k]
+                count += 1
+    if count:
+        path.write_text(json.dumps(data, indent=4) + "\n")
+    return count
+
+
 # Map filenames to fixers
-FILE_FIXERS: Dict[str, callable] = {
+FILE_FIXERS: Dict[str, Callable] = {
     "requirements.txt": _fix_requirements_txt,
     "requirements-dev.txt": _fix_requirements_txt,
     "requirements_dev.txt": _fix_requirements_txt,
@@ -135,6 +203,9 @@ FILE_FIXERS: Dict[str, callable] = {
     "go.mod": _fix_go_mod,
     "Pipfile": _fix_pipfile,
     "Pipfile.lock": _fix_pipfile_lock,
+    "Gemfile": _fix_gemfile,
+    "pom.xml": _fix_pom_xml,
+    "composer.json": _fix_composer_json,
 }
 
 

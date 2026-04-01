@@ -1,0 +1,5 @@
+# slopcheck allowlist
+# Add package names here to skip them during scans.
+# One package per line.
+
+another-pkg

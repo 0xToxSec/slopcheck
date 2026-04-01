@@ -58,6 +58,30 @@ POPULAR_PACKAGES = {
         "github.com/labstack/echo", "github.com/sirupsen/logrus",
         "go.uber.org/zap", "github.com/redis/go-redis",
     ],
+    "rubygems": [
+        "rails", "rack", "sinatra", "devise", "pundit", "sidekiq",
+        "rspec", "capybara", "puma", "nokogiri", "faker", "rubocop",
+        "activerecord", "actionpack", "activesupport", "bundler",
+        "json", "httparty", "faraday", "redis", "pg", "mysql2",
+        "aws-sdk", "stripe", "minitest", "resque", "whenever",
+    ],
+    "maven": [
+        "org.springframework:spring-core", "org.springframework.boot:spring-boot",
+        "com.google.guava:guava", "org.apache.commons:commons-lang3",
+        "junit:junit", "org.mockito:mockito-core", "org.slf4j:slf4j-api",
+        "com.fasterxml.jackson.core:jackson-databind", "org.projectlombok:lombok",
+        "org.apache.httpcomponents:httpclient", "com.squareup.okhttp3:okhttp",
+        "org.hibernate:hibernate-core", "com.google.code.gson:gson",
+        "org.apache.logging.log4j:log4j-core", "io.netty:netty-all",
+    ],
+    "packagist": [
+        "laravel/framework", "symfony/symfony", "guzzlehttp/guzzle",
+        "monolog/monolog", "phpunit/phpunit", "doctrine/orm",
+        "twig/twig", "league/flysystem", "vlucas/phpdotenv",
+        "briannesbitt/carbon", "ramsey/uuid", "spatie/laravel-permission",
+        "barryvdh/laravel-debugbar", "fzaninotto/faker", "predis/predis",
+        "intervention/image", "maatwebsite/excel", "league/oauth2-server",
+    ],
 }
 
 
@@ -93,7 +117,7 @@ class Verdict:
     """Final call on a package."""
     package: str
     ecosystem: str
-    status: str          # "SLOP", "SUS", "OK"
+    status: str          # "SLOP", "SUS", "OK", "ERROR"
     flags: List[Flag] = field(default_factory=list)
     suggestion: Optional[str] = None  # "did you mean X?"
 
@@ -137,6 +161,20 @@ def _find_similar(name: str, ecosystem: str, max_distance: int = 2) -> Optional[
 def analyze(info: PackageInfo) -> Verdict:
     """Run all detection signals against a PackageInfo. Return a Verdict."""
     flags: List[Flag] = []
+
+    # ---- Signal 0: Did the registry check fail? ----
+    if info.error and not info.exists:
+        flags.append(Flag(
+            signal="REGISTRY_ERROR",
+            severity="error",
+            message=f"Could not reach {info.ecosystem} registry: {info.error}"
+        ))
+        return Verdict(
+            package=info.name,
+            ecosystem=info.ecosystem,
+            status="ERROR",
+            flags=flags,
+        )
 
     # ---- Signal 1: Does it exist? ----
     if not info.exists:
@@ -248,9 +286,7 @@ def analyze(info: PackageInfo) -> Verdict:
 
     if crits > 0:
         status = "SLOP"
-    elif warns >= 2:
-        status = "SUS"
-    elif warns == 1:
+    elif warns > 0:
         status = "SUS"
     else:
         status = "OK"
