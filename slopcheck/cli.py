@@ -10,6 +10,7 @@ from typing import List, Tuple
 from slopcheck.registries import REGISTRY_CHECKERS, PackageInfo
 from slopcheck.detect import analyze, Verdict
 from slopcheck.parsers import auto_detect, FILE_PARSERS
+from slopcheck.fixer import fix_directory, fix_file
 
 
 def _info(msg: str) -> None:
@@ -282,11 +283,101 @@ def cmd_scan(args) -> None:
     else:
         print_summary(verdicts)
 
+    # --fix: remove SLOP packages from dependency files
+    fix = getattr(args, "fix", False)
+    if fix:
+        slop_names = [v.package for v in verdicts if v.status == "SLOP"]
+        if slop_names:
+            if target.is_file():
+                count = fix_file(target, slop_names)
+                if count:
+                    _info(f"  {C.GREEN}{C.BOLD}FIXED:{C.RESET} commented out {count} package(s) in {target.name}")
+            else:
+                fixed = fix_directory(target, slop_names)
+                total = sum(fixed.values())
+                if total:
+                    for fname, count in fixed.items():
+                        _info(f"  {C.GREEN}{C.BOLD}FIXED:{C.RESET} commented out {count} package(s) in {fname}")
+                else:
+                    _info(f"  {C.DIM}No files to fix (packages may be in lock files or JSON).{C.RESET}")
+            _info("")
+
     if any(v.status == "SLOP" for v in verdicts):
         sys.exit(2)
     elif any(v.status == "SUS" for v in verdicts):
         sys.exit(1)
     sys.exit(0)
+
+
+# ---------------------------------------------------------------------------
+# Init: git pre-commit hook
+# ---------------------------------------------------------------------------
+
+HOOK_SCRIPT = """\
+#!/bin/sh
+# slopcheck pre-commit hook -- block commits that add hallucinated packages
+# Installed by: slopcheck init
+
+slopcheck .
+STATUS=$?
+
+if [ $STATUS -eq 2 ]; then
+    echo ""
+    echo "slopcheck: SLOP detected. Commit blocked."
+    echo "Run 'slopcheck . --fix' to auto-remove bad packages, then try again."
+    exit 1
+fi
+
+exit 0
+"""
+
+
+def cmd_init() -> None:
+    """Drop a pre-commit hook into .git/hooks/."""
+    git_dir = Path(".git")
+    if not git_dir.is_dir():
+        _info(f"{C.RED}Not a git repository. Run this from your project root.{C.RESET}")
+        sys.exit(1)
+
+    hooks_dir = git_dir / "hooks"
+    hooks_dir.mkdir(exist_ok=True)
+    hook_path = hooks_dir / "pre-commit"
+
+    if hook_path.exists():
+        existing = hook_path.read_text()
+        if "slopcheck" in existing:
+            _info(f"{C.GREEN}slopcheck hook already installed.{C.RESET}")
+            sys.exit(0)
+        # There's an existing hook that isn't ours. Append to it.
+        _info(f"{C.YELLOW}Existing pre-commit hook found. Appending slopcheck check.{C.RESET}")
+        with open(hook_path, "a") as f:
+            f.write("\n\n# --- slopcheck (appended) ---\n")
+            # Write just the check part, not the shebang
+            f.write("\n".join(HOOK_SCRIPT.splitlines()[1:]) + "\n")
+    else:
+        hook_path.write_text(HOOK_SCRIPT)
+
+    # Make it executable (no-op on Windows, needed on Unix)
+    try:
+        import stat
+        hook_path.chmod(hook_path.stat().st_mode | stat.S_IEXEC)
+    except (OSError, AttributeError):
+        pass
+
+    _info(f"\n  {C.GREEN}{C.BOLD}Done.{C.RESET} slopcheck will run before every commit.")
+    _info(f"  If slop is found, the commit is blocked.")
+    _info(f"  Run {C.BOLD}slopcheck . --fix{C.RESET} to auto-clean your dependency files.\n")
+
+    # Run an initial scan so the user sees their current state immediately
+    _info(f"  {C.BOLD}Running initial scan...{C.RESET}\n")
+    from slopcheck.parsers import auto_detect
+    deps = auto_detect(Path("."))
+    if deps:
+        deps = list(set(deps))
+        verdicts = _check_packages(deps)
+        print_summary(verdicts)
+    else:
+        _info(f"  {C.DIM}No dependency files found yet. Hook is ready for when you add them.{C.RESET}\n")
 
 
 # ---------------------------------------------------------------------------
@@ -358,9 +449,21 @@ def main():
         dest="json_output",
         help="JSON output",
     )
+    scan_parser.add_argument(
+        "--fix",
+        action="store_true",
+        help="Auto-remove SLOP packages from dependency files",
+    )
+
+    # --- slopcheck init ---
+    subparsers.add_parser(
+        "init",
+        help="Set up a git pre-commit hook that runs slopcheck before every commit",
+        description="Drop a git pre-commit hook into .git/hooks/ so slopcheck runs automatically.",
+    )
 
     # Backwards compat: if first arg isn't a known subcommand, treat as scan
-    known_commands = {"install", "scan", "-h", "--help"}
+    known_commands = {"install", "scan", "init", "-h", "--help"}
     if len(sys.argv) > 1 and sys.argv[1] not in known_commands:
         # Inject "scan" so argparse routes correctly
         # slopcheck . -> slopcheck scan .
@@ -374,6 +477,8 @@ def main():
         cmd_install(args)
     elif args.command == "scan":
         cmd_scan(args)
+    elif args.command == "init":
+        cmd_init()
     else:
         # No args at all = scan current dir
         scan_args = scan_parser.parse_args(["."])

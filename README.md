@@ -52,6 +52,26 @@ slopcheck install some-package --force
 
 Slop gets blocked. Always. Suspicious packages get skipped unless you pass `--force`. Clean packages install normally through your real package manager.
 
+### Auto-fix (remove slop from your files)
+
+```bash
+# Scan and auto-remove hallucinated packages
+slopcheck . --fix
+
+# Fix a specific file
+slopcheck requirements.txt --fix
+```
+
+SLOP packages get commented out with `# [slopcheck] removed:` so you can see what was killed. JSON files (package.json, Pipfile.lock) get the keys deleted.
+
+### Set up git hook (one command)
+
+```bash
+slopcheck init
+```
+
+That's it. Now slopcheck runs before every commit. If slop is found, the commit is blocked. Run `slopcheck . --fix` to clean up, then commit again.
+
 ### Check a single package
 
 ```bash
@@ -119,6 +139,7 @@ target          Directory, file, or package name (default: .)
 --pkg ECOSYSTEM Check single package (pypi, npm, crates.io, go)
 --workers N     Parallel registry checks (default: 10)
 --json          JSON output for CI pipelines
+--fix           Auto-remove SLOP packages from dependency files
 ```
 
 ## GitHub Action
@@ -133,6 +154,7 @@ on:
     paths:
       - 'requirements*.txt'
       - 'pyproject.toml'
+      - 'Pipfile'
       - 'package.json'
       - 'Cargo.toml'
       - 'go.mod'

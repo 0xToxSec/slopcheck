@@ -1,0 +1,171 @@
+"""Fix dependency files by commenting out or removing bad packages."""
+
+import json
+import re
+from pathlib import Path
+from typing import Dict, List, Set
+
+
+def _comment_lines(path: Path, bad_names: Set[str], comment_char: str = "#") -> int:
+    """Comment out lines in a text file that contain a bad package name.
+
+    Works for: requirements.txt, Pipfile, Cargo.toml, go.mod.
+    Returns the number of lines commented out.
+    """
+    lines = path.read_text().splitlines(keepends=True)
+    count = 0
+    new_lines = []
+    for line in lines:
+        stripped = line.strip()
+        # Skip already-commented or empty lines
+        if not stripped or stripped.startswith(comment_char):
+            new_lines.append(line)
+            continue
+        # Extract the package name (first token before any = > < [ ; @ space)
+        token = re.split(r"[>=<!\[;@\s=\"\']", stripped)[0].strip()
+        if token.lower() in bad_names:
+            # Comment it out with a reason
+            new_lines.append(
+                f"{comment_char} [slopcheck] removed: {line.rstrip()}\n"
+            )
+            count += 1
+        else:
+            new_lines.append(line)
+    if count:
+        path.write_text("".join(new_lines))
+    return count
+
+
+def _fix_requirements_txt(path: Path, bad_names: Set[str]) -> int:
+    """Comment out bad packages in requirements.txt."""
+    return _comment_lines(path, bad_names, "#")
+
+
+def _fix_pipfile(path: Path, bad_names: Set[str]) -> int:
+    """Comment out bad packages in Pipfile."""
+    return _comment_lines(path, bad_names, "#")
+
+
+def _fix_cargo_toml(path: Path, bad_names: Set[str]) -> int:
+    """Comment out bad packages in Cargo.toml."""
+    return _comment_lines(path, bad_names, "#")
+
+
+def _fix_go_mod(path: Path, bad_names: Set[str]) -> int:
+    """Comment out bad packages in go.mod."""
+    return _comment_lines(path, bad_names, "//")
+
+
+def _fix_pyproject_toml(path: Path, bad_names: Set[str]) -> int:
+    """Remove bad packages from pyproject.toml (PEP 621 arrays + Poetry keys)."""
+    lines = path.read_text().splitlines(keepends=True)
+    count = 0
+    new_lines = []
+    for line in lines:
+        stripped = line.strip()
+        # Check quoted strings in array lines: "flask>=2.0",
+        match = re.match(r'["\']([a-zA-Z0-9_.-]+)', stripped)
+        if match and match.group(1).lower() in bad_names:
+            new_lines.append(
+                f"    # [slopcheck] removed: {line.rstrip()}\n"
+            )
+            count += 1
+            continue
+        # Check Poetry-style key = value lines
+        if "=" in stripped and not stripped.startswith("#") and not stripped.startswith("["):
+            key = stripped.split("=")[0].strip()
+            if key.lower() in bad_names:
+                new_lines.append(
+                    f"# [slopcheck] removed: {line.rstrip()}\n"
+                )
+                count += 1
+                continue
+        new_lines.append(line)
+    if count:
+        path.write_text("".join(new_lines))
+    return count
+
+
+def _fix_package_json(path: Path, bad_names: Set[str]) -> int:
+    """Remove bad packages from package.json."""
+    try:
+        data = json.loads(path.read_text())
+    except json.JSONDecodeError:
+        return 0
+    count = 0
+    for section in ("dependencies", "devDependencies", "peerDependencies"):
+        deps = data.get(section, {})
+        if isinstance(deps, dict):
+            to_remove = [k for k in deps if k.lower() in bad_names]
+            for k in to_remove:
+                del deps[k]
+                count += 1
+    if count:
+        path.write_text(json.dumps(data, indent=2) + "\n")
+    return count
+
+
+def _fix_pipfile_lock(path: Path, bad_names: Set[str]) -> int:
+    """Remove bad packages from Pipfile.lock."""
+    try:
+        data = json.loads(path.read_text())
+    except json.JSONDecodeError:
+        return 0
+    count = 0
+    for section in ("default", "develop"):
+        pkgs = data.get(section, {})
+        if isinstance(pkgs, dict):
+            to_remove = [k for k in pkgs if k.lower() in bad_names]
+            for k in to_remove:
+                del pkgs[k]
+                count += 1
+    if count:
+        path.write_text(json.dumps(data, indent=4, sort_keys=True) + "\n")
+    return count
+
+
+# Map filenames to fixers
+FILE_FIXERS: Dict[str, callable] = {
+    "requirements.txt": _fix_requirements_txt,
+    "requirements-dev.txt": _fix_requirements_txt,
+    "requirements_dev.txt": _fix_requirements_txt,
+    "pyproject.toml": _fix_pyproject_toml,
+    "package.json": _fix_package_json,
+    "Cargo.toml": _fix_cargo_toml,
+    "go.mod": _fix_go_mod,
+    "Pipfile": _fix_pipfile,
+    "Pipfile.lock": _fix_pipfile_lock,
+}
+
+
+def fix_directory(directory: Path, bad_packages: List[str]) -> Dict[str, int]:
+    """Remove bad packages from all dependency files in a directory.
+
+    Returns a dict of {filename: count_removed}.
+    """
+    bad_names = {p.lower() for p in bad_packages}
+    results = {}
+    for filename, fixer in FILE_FIXERS.items():
+        filepath = directory / filename
+        if filepath.exists():
+            count = fixer(filepath, bad_names)
+            if count:
+                results[filename] = count
+    return results
+
+
+def fix_file(filepath: Path, bad_packages: List[str]) -> int:
+    """Remove bad packages from a specific dependency file.
+
+    Returns the count of packages removed.
+    """
+    bad_names = {p.lower() for p in bad_packages}
+    name = filepath.name
+    fixer = FILE_FIXERS.get(name)
+    if not fixer:
+        # Try matching requirements-*.txt pattern
+        if "requirements" in name and name.endswith(".txt"):
+            fixer = _fix_requirements_txt
+        else:
+            return 0
+    return fixer(filepath, bad_names)
