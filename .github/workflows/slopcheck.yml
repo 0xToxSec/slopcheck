@@ -8,12 +8,15 @@ on:
     paths:
       - 'requirements*.txt'
       - 'pyproject.toml'
-      - 'setup.py'
-      - 'setup.cfg'
       - 'Pipfile'
+      - 'Pipfile.lock'
       - 'package.json'
       - 'Cargo.toml'
       - 'go.mod'
+      - 'Gemfile'
+      - 'pom.xml'
+      - 'build.gradle'
+      - 'composer.json'
 
 jobs:
   slopcheck:

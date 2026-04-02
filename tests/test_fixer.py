@@ -6,18 +6,19 @@ import tempfile
 from pathlib import Path
 
 from slopcheck.fixer import (
-    fix_directory,
-    fix_file,
     _comment_lines,
     _fix_package_json,
     _fix_pyproject_toml,
+    fix_directory,
+    fix_file,
 )
 
 
 def _tmpfile(content: str, suffix: str = ".txt") -> Path:
-    p = Path(tempfile.mktemp(suffix=suffix))
-    p.write_text(content)
-    return p
+    """Write content to a temp file and return the path."""
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False, mode="w") as f:
+        f.write(content)
+    return Path(f.name)
 
 
 class TestCommentLines:
@@ -82,11 +83,11 @@ class TestFixPyprojectToml:
     def test_comments_out_array_deps(self):
         content = (
             '[project]\nname = "test"\n'
-            'dependencies = [\n'
+            "dependencies = [\n"
             '    "flask>=2.0",\n'
             '    "bad-package==1.0",\n'
             '    "requests",\n'
-            ']\n'
+            "]\n"
         )
         p = _tmpfile(content, suffix=".toml")
         count = _fix_pyproject_toml(p, {"bad-package"})
@@ -122,9 +123,7 @@ class TestFixFile:
 class TestFixDirectory:
     def test_fixes_multiple_files(self, tmp_path):
         (tmp_path / "requirements.txt").write_text("flask\nbad-pkg\n")
-        (tmp_path / "package.json").write_text(
-            json.dumps({"dependencies": {"bad-pkg": "^1.0", "express": "^4.0"}})
-        )
+        (tmp_path / "package.json").write_text(json.dumps({"dependencies": {"bad-pkg": "^1.0", "express": "^4.0"}}))
         results = fix_directory(tmp_path, ["bad-pkg"])
         assert results.get("requirements.txt", 0) == 1
         assert results.get("package.json", 0) == 1

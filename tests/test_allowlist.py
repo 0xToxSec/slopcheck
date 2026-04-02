@@ -1,8 +1,5 @@
 """Tests for the allowlist module."""
 
-import shutil
-from pathlib import Path
-
 from slopcheck.allowlist import _find_allowlist, add, load, remove
 
 

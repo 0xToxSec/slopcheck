@@ -3,7 +3,6 @@
 from datetime import datetime, timedelta, timezone
 
 from slopcheck.detect import (
-    Flag,
     Verdict,
     _check_hallucination_pattern,
     _find_similar,
@@ -12,10 +11,10 @@ from slopcheck.detect import (
 )
 from slopcheck.registries import PackageInfo
 
-
 # ---------------------------------------------------------------------------
 # Levenshtein distance
 # ---------------------------------------------------------------------------
+
 
 class TestLevenshtein:
     def test_identical(self):
@@ -40,6 +39,7 @@ class TestLevenshtein:
 # ---------------------------------------------------------------------------
 # Hallucination pattern detection
 # ---------------------------------------------------------------------------
+
 
 class TestHallucinationPattern:
     def test_suffix_helper(self):
@@ -74,6 +74,7 @@ class TestHallucinationPattern:
 # Typosquat / similar package detection
 # ---------------------------------------------------------------------------
 
+
 class TestFindSimilar:
     def test_reqeusts(self):
         assert _find_similar("reqeusts", "pypi") == "requests"
@@ -101,13 +102,16 @@ class TestFindSimilar:
 # Verdict analysis
 # ---------------------------------------------------------------------------
 
+
 class TestAnalyze:
     """Test the full analyze() pipeline."""
 
     def test_network_error_returns_error_status(self):
         """Network failures must NOT be classified as SLOP."""
         info = PackageInfo(
-            name="requests", ecosystem="pypi", exists=False,
+            name="requests",
+            ecosystem="pypi",
+            exists=False,
             error="Connection timed out",
         )
         v = analyze(info)
@@ -122,7 +126,9 @@ class TestAnalyze:
 
     def test_nonexistent_with_hallucination_pattern(self):
         info = PackageInfo(
-            name="flask-gpt-helper", ecosystem="pypi", exists=False,
+            name="flask-gpt-helper",
+            ecosystem="pypi",
+            exists=False,
         )
         v = analyze(info)
         assert v.status == "SLOP"
@@ -131,9 +137,12 @@ class TestAnalyze:
 
     def test_brand_new_package_is_slop(self):
         info = PackageInfo(
-            name="sketchy-pkg", ecosystem="pypi", exists=True,
+            name="sketchy-pkg",
+            ecosystem="pypi",
+            exists=True,
             created=datetime.now(timezone.utc) - timedelta(days=3),
-            downloads=50, repo_url=None,
+            downloads=50,
+            repo_url=None,
         )
         v = analyze(info)
         assert v.status == "SLOP"
@@ -141,7 +150,9 @@ class TestAnalyze:
 
     def test_established_package_with_pattern_is_ok(self):
         info = PackageInfo(
-            name="python-dateutil", ecosystem="pypi", exists=True,
+            name="python-dateutil",
+            ecosystem="pypi",
+            exists=True,
             created=datetime.now(timezone.utc) - timedelta(days=3650),
             downloads=50_000_000,
             repo_url="https://github.com/dateutil/dateutil",
@@ -151,7 +162,9 @@ class TestAnalyze:
 
     def test_clean_popular_package_is_ok(self):
         info = PackageInfo(
-            name="requests", ecosystem="pypi", exists=True,
+            name="requests",
+            ecosystem="pypi",
+            exists=True,
             created=datetime.now(timezone.utc) - timedelta(days=5000),
             downloads=200_000_000,
             repo_url="https://github.com/psf/requests",
@@ -162,8 +175,11 @@ class TestAnalyze:
 
     def test_low_downloads_is_sus(self):
         info = PackageInfo(
-            name="weird-thing", ecosystem="pypi", exists=True,
-            created=None, downloads=50,
+            name="weird-thing",
+            ecosystem="pypi",
+            exists=True,
+            created=None,
+            downloads=50,
             repo_url="https://github.com/x/y",
         )
         v = analyze(info)
@@ -173,8 +189,11 @@ class TestAnalyze:
     def test_single_warning_is_sus(self):
         """One warning alone should be SUS, not OK."""
         info = PackageInfo(
-            name="weird-thing", ecosystem="pypi", exists=True,
-            created=None, downloads=50,
+            name="weird-thing",
+            ecosystem="pypi",
+            exists=True,
+            created=None,
+            downloads=50,
             repo_url="https://github.com/x/y",
         )
         v = analyze(info)
@@ -187,7 +206,9 @@ class TestAnalyze:
 
     def test_no_suggestion_on_clean_package(self):
         info = PackageInfo(
-            name="requests", ecosystem="pypi", exists=True,
+            name="requests",
+            ecosystem="pypi",
+            exists=True,
             created=datetime.now(timezone.utc) - timedelta(days=5000),
             downloads=200_000_000,
             repo_url="https://github.com/psf/requests",

@@ -5,10 +5,9 @@ import os
 import tempfile
 from pathlib import Path
 
-import pytest
-
 from slopcheck.parsers import (
     auto_detect,
+    parse_build_gradle,
     parse_cargo_toml,
     parse_composer_json,
     parse_gemfile,
@@ -16,6 +15,7 @@ from slopcheck.parsers import (
     parse_package_json,
     parse_pipfile,
     parse_pipfile_lock,
+    parse_pom_xml,
     parse_pyproject_toml,
     parse_requirements_txt,
 )
@@ -23,14 +23,15 @@ from slopcheck.parsers import (
 
 def _tmpfile(content: str, suffix: str = ".txt") -> Path:
     """Write content to a temp file and return the path."""
-    p = Path(tempfile.mktemp(suffix=suffix))
-    p.write_text(content)
-    return p
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False, mode="w") as f:
+        f.write(content)
+    return Path(f.name)
 
 
 # ---------------------------------------------------------------------------
 # requirements.txt
 # ---------------------------------------------------------------------------
+
 
 class TestRequirementsTxt:
     def test_basic_packages(self):
@@ -55,10 +56,7 @@ class TestRequirementsTxt:
 
     def test_git_urls_skipped(self):
         p = _tmpfile(
-            "flask\n"
-            "git+https://github.com/foo/bar.git\n"
-            "git+https://github.com/foo/bar.git@v1.0#egg=bar\n"
-            "requests\n"
+            "flask\ngit+https://github.com/foo/bar.git\ngit+https://github.com/foo/bar.git@v1.0#egg=bar\nrequests\n"
         )
         result = parse_requirements_txt(p)
         os.unlink(p)
@@ -66,12 +64,7 @@ class TestRequirementsTxt:
         assert names == ["flask", "requests"]
 
     def test_vcs_urls_skipped(self):
-        p = _tmpfile(
-            "hg+https://example.com/repo\n"
-            "svn+https://example.com/repo\n"
-            "bzr+https://example.com/repo\n"
-            "flask\n"
-        )
+        p = _tmpfile("hg+https://example.com/repo\nsvn+https://example.com/repo\nbzr+https://example.com/repo\nflask\n")
         result = parse_requirements_txt(p)
         os.unlink(p)
         assert result == [("pypi", "flask")]
@@ -111,11 +104,11 @@ class TestRequirementsTxt:
 # pyproject.toml
 # ---------------------------------------------------------------------------
 
+
 class TestPyprojectToml:
     def test_inline_array(self):
         p = _tmpfile(
-            '[project]\nname = "test"\n'
-            'dependencies = [\n    "flask>=2.0",\n    "requests",\n]\n',
+            '[project]\nname = "test"\ndependencies = [\n    "flask>=2.0",\n    "requests",\n]\n',
             suffix=".toml",
         )
         result = parse_pyproject_toml(p)
@@ -147,11 +140,11 @@ class TestPyprojectToml:
 
     def test_poetry_format(self):
         p = _tmpfile(
-            '[tool.poetry.dependencies]\n'
+            "[tool.poetry.dependencies]\n"
             'python = "^3.9"\n'
             'flask = "^2.0"\n'
             'requests = {version = ">=2.28"}\n\n'
-            '[tool.poetry.dev-dependencies]\n'
+            "[tool.poetry.dev-dependencies]\n"
             'pytest = "^7.0"\n',
             suffix=".toml",
         )
@@ -165,9 +158,7 @@ class TestPyprojectToml:
 
     def test_build_system_not_included(self):
         p = _tmpfile(
-            '[build-system]\n'
-            'requires = ["setuptools>=68.0", "wheel"]\n\n'
-            '[project]\ndependencies = ["flask"]\n',
+            '[build-system]\nrequires = ["setuptools>=68.0", "wheel"]\n\n[project]\ndependencies = ["flask"]\n',
             suffix=".toml",
         )
         result = parse_pyproject_toml(p)
@@ -187,6 +178,7 @@ class TestPyprojectToml:
 # ---------------------------------------------------------------------------
 # Cargo.toml
 # ---------------------------------------------------------------------------
+
 
 class TestCargoToml:
     def test_basic_deps(self):
@@ -249,6 +241,7 @@ class TestCargoToml:
 # package.json
 # ---------------------------------------------------------------------------
 
+
 class TestPackageJson:
     def test_all_dep_types(self):
         data = {
@@ -279,17 +272,76 @@ class TestPackageJson:
 
 
 # ---------------------------------------------------------------------------
+# Pipfile
+# ---------------------------------------------------------------------------
+
+
+class TestPipfile:
+    def test_basic_packages(self):
+        p = _tmpfile(
+            '[packages]\nflask = "*"\nrequests = {version = ">=2.28"}\n\n[dev-packages]\npytest = "~=7.0"\n',
+            suffix="",
+        )
+        result = parse_pipfile(p)
+        os.unlink(p)
+        names = [name for _, name in result]
+        assert "flask" in names
+        assert "requests" in names
+        assert "pytest" in names
+
+    def test_comments_skipped(self):
+        p = _tmpfile('[packages]\n# flask = "*"\nrequests = "*"\n', suffix="")
+        result = parse_pipfile(p)
+        os.unlink(p)
+        assert result == [("pypi", "requests")]
+
+    def test_non_package_sections_ignored(self):
+        p = _tmpfile('[scripts]\ntest = "pytest"\n\n[packages]\nflask = "*"\n', suffix="")
+        result = parse_pipfile(p)
+        os.unlink(p)
+        assert result == [("pypi", "flask")]
+
+
+# ---------------------------------------------------------------------------
+# Pipfile.lock
+# ---------------------------------------------------------------------------
+
+
+class TestPipfileLock:
+    def test_default_and_develop(self):
+        data = {
+            "_meta": {},
+            "default": {"flask": {"version": "==2.3.0"}, "requests": {"version": "==2.31.0"}},
+            "develop": {"pytest": {"version": "==7.4.0"}},
+        }
+        p = _tmpfile(json.dumps(data), suffix=".lock")
+        result = parse_pipfile_lock(p)
+        os.unlink(p)
+        names = [name for _, name in result]
+        assert "flask" in names
+        assert "requests" in names
+        assert "pytest" in names
+
+    def test_invalid_json(self):
+        p = _tmpfile("not json", suffix=".lock")
+        result = parse_pipfile_lock(p)
+        os.unlink(p)
+        assert result == []
+
+
+# ---------------------------------------------------------------------------
 # go.mod
 # ---------------------------------------------------------------------------
+
 
 class TestGoMod:
     def test_multiline_require(self):
         p = _tmpfile(
-            'module github.com/org/app\n\ngo 1.21\n\n'
-            'require (\n'
-            '\tgithub.com/gin-gonic/gin v1.9.1\n'
-            '\tgithub.com/stretchr/testify v1.8.4 // indirect\n'
-            ')\n',
+            "module github.com/org/app\n\ngo 1.21\n\n"
+            "require (\n"
+            "\tgithub.com/gin-gonic/gin v1.9.1\n"
+            "\tgithub.com/stretchr/testify v1.8.4 // indirect\n"
+            ")\n",
             suffix=".mod",
         )
         result = parse_go_mod(p)
@@ -312,6 +364,7 @@ class TestGoMod:
 # Gemfile
 # ---------------------------------------------------------------------------
 
+
 class TestGemfile:
     def test_basic_gems(self):
         p = _tmpfile("gem 'rails', '~> 7.0'\ngem \"devise\"\n", suffix="")
@@ -329,8 +382,96 @@ class TestGemfile:
 
 
 # ---------------------------------------------------------------------------
+# pom.xml
+# ---------------------------------------------------------------------------
+
+
+class TestPomXml:
+    def test_basic_dependencies(self):
+        p = _tmpfile(
+            '<?xml version="1.0"?>\n<project>\n'
+            "  <dependencies>\n"
+            "    <dependency>\n"
+            "      <groupId>org.springframework</groupId>\n"
+            "      <artifactId>spring-core</artifactId>\n"
+            "      <version>5.3.0</version>\n"
+            "    </dependency>\n"
+            "    <dependency>\n"
+            "      <groupId>com.google.guava</groupId>\n"
+            "      <artifactId>guava</artifactId>\n"
+            "      <version>31.0</version>\n"
+            "    </dependency>\n"
+            "  </dependencies>\n"
+            "</project>\n",
+            suffix=".xml",
+        )
+        result = parse_pom_xml(p)
+        os.unlink(p)
+        names = [name for _, name in result]
+        assert "org.springframework:spring-core" in names
+        assert "com.google.guava:guava" in names
+
+    def test_empty_pom(self):
+        p = _tmpfile("<project></project>\n", suffix=".xml")
+        result = parse_pom_xml(p)
+        os.unlink(p)
+        assert result == []
+
+
+# ---------------------------------------------------------------------------
+# build.gradle
+# ---------------------------------------------------------------------------
+
+
+class TestBuildGradle:
+    def test_implementation_single_quotes(self):
+        p = _tmpfile(
+            "dependencies {\n"
+            "    implementation 'org.springframework:spring-core:5.3.0'\n"
+            "    testImplementation 'junit:junit:4.13'\n"
+            "}\n",
+            suffix=".gradle",
+        )
+        result = parse_build_gradle(p)
+        os.unlink(p)
+        names = [name for _, name in result]
+        assert "org.springframework:spring-core" in names
+        assert "junit:junit" in names
+
+    def test_implementation_double_quotes(self):
+        p = _tmpfile(
+            'dependencies {\n    implementation "com.google.guava:guava:31.0"\n}\n',
+            suffix=".gradle",
+        )
+        result = parse_build_gradle(p)
+        os.unlink(p)
+        assert ("maven", "com.google.guava:guava") in result
+
+    def test_group_name_version_format(self):
+        p = _tmpfile(
+            "dependencies {\n    implementation group: 'com.google', name: 'guava', version: '31.0'\n}\n",
+            suffix=".gradle",
+        )
+        result = parse_build_gradle(p)
+        os.unlink(p)
+        assert ("maven", "com.google:guava") in result
+
+    def test_comments_skipped(self):
+        p = _tmpfile(
+            "dependencies {\n    // implementation 'evil:pkg:1.0'\n    implementation 'real:pkg:1.0'\n}\n",
+            suffix=".gradle",
+        )
+        result = parse_build_gradle(p)
+        os.unlink(p)
+        names = [name for _, name in result]
+        assert "evil:pkg" not in names
+        assert "real:pkg" in names
+
+
+# ---------------------------------------------------------------------------
 # composer.json
 # ---------------------------------------------------------------------------
+
 
 class TestComposerJson:
     def test_require(self):
@@ -353,6 +494,7 @@ class TestComposerJson:
 # auto_detect
 # ---------------------------------------------------------------------------
 
+
 class TestAutoDetect:
     def test_finds_requirements_txt(self, tmp_path):
         (tmp_path / "requirements.txt").write_text("flask\nrequests\n")
@@ -365,9 +507,7 @@ class TestAutoDetect:
 
     def test_multiple_files(self, tmp_path):
         (tmp_path / "requirements.txt").write_text("flask\n")
-        (tmp_path / "package.json").write_text(
-            json.dumps({"dependencies": {"express": "^4.0"}})
-        )
+        (tmp_path / "package.json").write_text(json.dumps({"dependencies": {"express": "^4.0"}}))
         result = auto_detect(tmp_path)
         ecosystems = {eco for eco, _ in result}
         assert "pypi" in ecosystems

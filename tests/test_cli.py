@@ -6,10 +6,9 @@ import sys
 from slopcheck import __version__
 from slopcheck.cli import (
     C,
-    _status_badge,
     _severity_color,
+    _status_badge,
     print_verdict,
-    print_summary,
 )
 from slopcheck.detect import Flag, Verdict
 
@@ -84,4 +83,4 @@ class TestPrintVerdict:
 
 class TestVersion:
     def test_version_string(self):
-        assert __version__ == "0.5.0"
+        assert __version__ == "0.6.1"
