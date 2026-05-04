@@ -59,6 +59,36 @@ class TestLoad:
         result = load(tmp_path)
         assert "my-package" in result
 
+    def test_inline_comment_stripped(self, tmp_path):
+        (tmp_path / ".slopcheck").write_text(
+            "vitest  # 5M+/wk on npm\njest # legit\n"
+        )
+        (tmp_path / ".git").mkdir()
+        result = load(tmp_path)
+        assert result == {"vitest", "jest"}
+
+    def test_inline_comment_no_space(self, tmp_path):
+        (tmp_path / ".slopcheck").write_text("react#no-space\n")
+        (tmp_path / ".git").mkdir()
+        result = load(tmp_path)
+        assert result == {"react"}
+
+    def test_inline_comment_multiple_hashes(self, tmp_path):
+        """Only the first ``#`` counts — text after additional hashes is part of the comment."""
+        (tmp_path / ".slopcheck").write_text("vitest # comment with # second hash\n")
+        (tmp_path / ".git").mkdir()
+        result = load(tmp_path)
+        assert result == {"vitest"}
+
+    def test_above_line_comments_still_work(self, tmp_path):
+        """Regression: existing two-line comment style remains valid."""
+        (tmp_path / ".slopcheck").write_text(
+            "# vitest: 5M+/wk\nvitest\n# jest: 20M+/wk\njest\n"
+        )
+        (tmp_path / ".git").mkdir()
+        result = load(tmp_path)
+        assert result == {"vitest", "jest"}
+
 
 class TestAdd:
     def test_adds_package(self, tmp_path):
@@ -78,6 +108,14 @@ class TestAdd:
     def test_no_duplicate(self, tmp_path):
         (tmp_path / ".git").mkdir()
         (tmp_path / ".slopcheck").write_text("# header\nexisting-pkg\n")
+        add("existing-pkg", tmp_path)
+        content = (tmp_path / ".slopcheck").read_text()
+        assert content.count("existing-pkg") == 1
+
+    def test_no_duplicate_with_inline_comment(self, tmp_path):
+        """Adding a package that already has an inline comment should be a no-op."""
+        (tmp_path / ".git").mkdir()
+        (tmp_path / ".slopcheck").write_text("# header\nexisting-pkg # provenance\n")
         add("existing-pkg", tmp_path)
         content = (tmp_path / ".slopcheck").read_text()
         assert content.count("existing-pkg") == 1
@@ -103,3 +141,14 @@ class TestRemove:
         (tmp_path / ".git").mkdir()
         result = remove("anything", tmp_path)
         assert result is False
+
+    def test_removes_entry_with_inline_comment(self, tmp_path):
+        (tmp_path / ".git").mkdir()
+        (tmp_path / ".slopcheck").write_text(
+            "# header\nmy-pkg # 1M+/wk\nother-pkg\n"
+        )
+        result = remove("my-pkg", tmp_path)
+        assert result is True
+        content = (tmp_path / ".slopcheck").read_text()
+        assert "my-pkg" not in content
+        assert "other-pkg" in content

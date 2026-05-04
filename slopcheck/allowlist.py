@@ -31,14 +31,18 @@ def _find_allowlist(start: Optional[Path] = None) -> Path:
 
 
 def load(start: Optional[Path] = None) -> set[str]:
-    """Load allowlisted package names. Returns lowercase set."""
+    """Load allowlisted package names. Returns lowercase set.
+
+    Lines may contain inline ``#`` comments — anything after the first ``#``
+    on a line is stripped before the package name is recorded.
+    """
     path = _find_allowlist(start)
     if not path.exists():
         return set()
     names = set()
-    for line in path.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if line and not line.startswith("#"):
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.split("#", 1)[0].strip()
+        if line:
             names.add(line.lower())
     return names
 
@@ -49,9 +53,9 @@ def add(name: str, start: Optional[Path] = None) -> Path:
     existing = set()
     if path.exists():
         existing = {
-            line.strip().lower()
+            line.split("#", 1)[0].strip().lower()
             for line in path.read_text(encoding="utf-8").splitlines()
-            if line.strip() and not line.strip().startswith("#")
+            if line.split("#", 1)[0].strip()
         }
 
     if name.lower() in existing:
@@ -80,7 +84,7 @@ def remove(name: str, start: Optional[Path] = None) -> bool:
     new_lines = []
     found = False
     for line in lines:
-        if line.strip().lower() == name.lower():
+        if line.split("#", 1)[0].strip().lower() == name.lower():
             found = True
         else:
             new_lines.append(line)
